@@ -19,63 +19,67 @@
 - [x] Frontend: useAgent hook (Tauri IPC ile agent loop)
 - [x] E2E: agent loop tam tur testi (prompt -> LLM -> tool -> sonuc) [22 tests, vitest mock]
 
-## Faz 3: Memory + Mnemonics (Native)
-- [ ] Rust: SQLite schema (memories, observations, learned, sessions, jobs)
-- [ ] Rust: auto-observe (her tool call observation'a yazilir)
-- [ ] Rust: auto-inject (her turn relevant memory'ler system prompt'a eklenir)
-- [ ] Rust: reinforcement (tool reddi -> learned tablosu)
-- [ ] Rust: compact policy (30 gun erisilmeyen tier-1 arsiv)
-- [ ] Rust: per-proje scope (.goblin/ klasoru)
-- [ ] Rust: mnemonics_add, mnemonics_retrieve, mnemonics_observe, mnemonics_learn
-- [ ] E2E: memory write -> read -> inject dogrulama
-- [ ] E2E: observation otomatik kayit dogrulama
-- [ ] E2E: reinforcement sayaci dogrulama
+## Faz 3: Memory + Mnemonics (Native) ✅
+- [x] Rust: SQLite schema (memories, observations, learned, sessions, FTS5)
+- [x] Rust: auto-observe (her tool call observation'a yazilir)
+- [x] Rust: auto-inject (her turn relevant memory'ler system prompt'a eklenir)
+- [x] Rust: reinforcement (tool reddi -> learned tablosu)
+- [x] Rust: compact policy (30 gun erisilmeyen tier-1 arsiv)
+- [x] Rust: per-proje scope (.goblin/ klasoru)
+- [x] Rust: mnemonics_add, mnemonics_retrieve, mnemonics_observe, mnemonics_learn
+- [x] E2E: memory write -> read -> inject dogrulama
+- [x] E2E: observation otomatik kayit dogrulama
+- [x] E2E: reinforcement sayaci dogrulama
 
-## Faz 4: Dosya + Shell Tool'lari
-- [ ] Rust: read_file (satir numarali, offset/limit)
-- [ ] Rust: write_file (tam uzerine yazma)
-- [ ] Rust: edit_file (fuzzy match, tek nokta degisiklik)
+## Faz 4: Dosya + Shell Tool'lari ✅
+- [x] Rust: read_file (satir numarali, offset/limit)
+- [x] Rust: write_file (tam uzerine yazma, parent dir create)
+- [x] Rust: edit_file (fuzzy match, tek nokta degisiklik, replace-all)
 - [ ] Rust: multi_edit (atomik coklu duzenleme)
-- [ ] Rust: grep (ripgrep destekli icerik arama)
-- [ ] Rust: glob (dosya/dizin bulma)
-- [ ] Rust: bash (komut calistir, timeout, sandbox)
+- [x] Rust: grep (regex destekli icerik arama, file filter)
+- [x] Rust: glob (dosya/dizin bulma, .git/node_modules ignore)
+- [x] Rust: bash (komut calistir, stdout/stderr capture, exit code)
 - [ ] Rust: bash_background (arka plan surec, notify)
-- [ ] E2E: dosya yaz -> oku -> karsilastir
-- [ ] E2E: edit_file fuzzy match dogrulama
-- [ ] E2E: bash komut calistirma + timeout dogrulama
+- [x] E2E: dosya yaz -> oku -> karsilastir
+- [x] E2E: edit_file fuzzy match dogrulama
+- [x] E2E: bash komut calistirma + timeout dogrulama
 
-## Faz 5: Provider Katmani
-- [ ] Rust: DeepSeek provider (OpenAI-compatible) -- done in Faz 2
+## Faz 5: Provider Katmani 🔧
+- [x] Rust: DeepSeek provider (OpenAI-compatible)
 - [ ] Rust: NVIDIA NIM provider
 - [ ] Rust: Anthropic provider
 - [ ] Rust: GLM provider
 - [ ] Rust: auto-routing (fast/strong/vision)
-- [ ] Rust: cost tracking (token sayimi + fiyat hesabi)
+- [x] Rust: cost tracking (token sayimi + fiyat hesabi, deepseek/gpt/claude pricing)
 - [ ] Rust: credential pooling (coklu API key rotasyonu)
 - [ ] E2E: her provider'a gercek API call
 - [ ] E2E: auto-routing karar dogrulama
-- [ ] E2E: cost tracking dogrulama
+- [x] E2E: cost tracking dogrulama [vitest]
 
-## Faz 6: Session Sistemi
-- [ ] Rust: session store (SQLite)
-- [ ] Rust: session resume (--resume, --continue)
-- [ ] Rust: FTS5 tam metin arama (session_search)
-- [ ] Rust: session export (JSONL)
-- [ ] Frontend: sidebar'da session listesi
-- [ ] E2E: session olustur -> kapat -> resume -> mesajlar ayni
+## Faz 6: Session Sistemi ✅
+- [x] Rust: session store (SQLite)
+- [x] Rust: session resume (session_switch Tauri komutu)
+- [x] Rust: FTS5 tam metin arama (session_search)
+- [ ] Rust: session export (JSONL dosyaya yaz)
+- [x] Frontend: sidebar'da session listesi
+- [x] E2E: session olustur -> kapat -> resume -> mesajlar ayni
 
-## Faz 7: Web + Browser Tool'lari
-- [ ] Rust: web_search (arama motoru)
-- [ ] Rust: web_fetch (URL icerik cekme)
+## Faz 7: Web + Browser Tool'lari 🔧
+- [x] Rust: web_search (DuckDuckGo scraping)
+- [x] Rust: web_fetch (URL icerik cekme, JSON detect, 15K truncate)
 - [ ] Rust: browser_navigate, click, type, scroll, snapshot, press
 - [ ] Rust: browser_vision (screenshot + LLM analiz)
 - [ ] Rust: browser_console (JS calistir/okuma)
 - [ ] E2E: browser ac -> tikla -> sonuc dogrula
 
-## Faz 8: Cron Sistemi
-- [ ] Rust: job scheduler (schedule parse)
-- [ ] Rust: agent mode (prompt + skills yukle, calistir)
-- [ ] Rust: script mode (no_agent=true, stdout direkt)
+## Faz 8: Cron Sistemi ✅
+- [x] Rust: job scheduler (schedule parse - 5-field cron, */step, range, list)
+- [x] Rust: agent mode (prompt + agent loop ile calistir)
+- [x] Rust: script mode (bash ile calistir, stdout/stderr capture)
+- [x] Rust: cron_jobs SQLite tablosu (id, schedule, prompt, mode, enabled, last_run, run_count, last_output, last_error)
+- [x] Rust: Tauri komutlari (cron_add, cron_list, cron_get, cron_delete, cron_toggle, cron_run_now)
+- [x] Rust: background scheduler (60sn interval, tokio::spawn)
+- [x] Test: 11 cron parser + scheduler testi gecti
 
 ## Faz 9: Diger Tool'lar
 - [ ] delegation (delegate_task)

@@ -8,6 +8,7 @@ mod tools;
 
 use agent::r#loop::AgentLoop;
 use crate::config::Config;
+use crate::cron::{CronStore, execute_script_job, CronJob};
 use provider::openai::OpenAIProvider;
 use memory::{MemoryDb, inject, compact, observe, reinforcement};
 use session::SessionStore;
@@ -15,6 +16,7 @@ use tools::ToolRegistry;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
 use tauri::State;
+use tauri::Manager;
 
 struct AppState {
     agent: Mutex<Option<AgentLoop>>,
@@ -22,6 +24,7 @@ struct AppState {
     memory: MemoryDb,
     session_id: StdMutex<String>,
     session_store: SessionStore,
+    cron_store: CronStore,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -263,6 +266,118 @@ async fn reinforce(state: State<'_, AppState>, preference: String) -> Result<(),
     Ok(())
 }
 
+#[tauri::command]
+async fn cron_add(state: State<'_, AppState>, schedule: String, prompt: String, mode: String) -> Result<CronJob, String> {
+    let job = CronJob {
+        id: uuid::Uuid::new_v4().to_string(),
+        schedule,
+        prompt,
+        mode,
+        enabled: true,
+        created_at: chrono::Utc::now().timestamp(),
+        last_run: None,
+        run_count: 0,
+        last_error: None,
+        last_output: None,
+    };
+    state.cron_store.add(&job)?;
+    Ok(job)
+}
+
+#[tauri::command]
+async fn cron_list(state: State<'_, AppState>) -> Result<Vec<CronJob>, String> {
+    state.cron_store.list()
+}
+
+#[tauri::command]
+async fn cron_get(state: State<'_, AppState>, id: String) -> Result<Option<CronJob>, String> {
+    state.cron_store.get(&id)
+}
+
+#[tauri::command]
+async fn cron_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.cron_store.delete(&id)
+}
+
+#[tauri::command]
+async fn cron_toggle(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    state.cron_store.toggle(&id)
+}
+
+#[tauri::command]
+async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let job = state.cron_store.get(&id)?
+        .ok_or_else(|| format!("Job not found: {}", id))?;
+
+    let now = chrono::Utc::now().timestamp();
+
+    let result = if job.mode == "script" {
+        execute_script_job(&job.prompt)
+    } else {
+        let mut agent_guard = state.agent.lock().await;
+        let agent = agent_guard
+            .as_mut()
+            .ok_or_else(|| "Agent not initialized".to_string())?;
+
+        let response = agent
+            .send_message(&job.prompt, None, &[], &[], None)
+            .await
+            .map_err(|e| format!("Agent error: {}", e))?;
+        Ok(response.content)
+    };
+
+    match &result {
+        Ok(output) => {
+            state.cron_store.mark_run(&id, now, Some(output), None).ok();
+        }
+        Err(e) => {
+            state.cron_store.mark_run(&id, now, None, Some(e)).ok();
+        }
+    }
+
+    result
+}
+
+async fn cron_scheduler_loop(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+        let state = app.state::<AppState>();
+        let now = chrono::Utc::now();
+        let due = state.cron_store.due_jobs(&now).unwrap_or_default();
+
+        for job in due {
+            let now_ts = now.timestamp();
+
+            let result = if job.mode == "script" {
+                execute_script_job(&job.prompt)
+            } else {
+                let mut agent_guard = state.agent.lock().await;
+                match agent_guard.as_mut() {
+                    Some(agent) => {
+                        agent
+                            .send_message(&job.prompt, None, &[], &[], None)
+                            .await
+                            .map(|r| r.content)
+                            .map_err(|e| format!("Agent error: {}", e))
+                    }
+                    None => Err("Agent not initialized".to_string()),
+                }
+            };
+
+            match &result {
+                Ok(output) => {
+                    state.cron_store.mark_run(&job.id, now_ts, Some(output), None).ok();
+                }
+                Err(e) => {
+                    eprintln!("Cron job {} failed: {}", job.id, e);
+                    state.cron_store.mark_run(&job.id, now_ts, None, Some(e)).ok();
+                }
+            }
+        }
+    }
+}
+
 fn init_agent(config: &Config, tool_registry: ToolRegistry) -> Option<AgentLoop> {
     if let Some(openai_cfg) = &config.providers.openai {
         let provider = OpenAIProvider {
@@ -328,6 +443,20 @@ pub fn run() {
         store
     };
 
+    let cron_store = {
+        let conn = rusqlite::Connection::open(db_path.to_str().unwrap_or("memory.db"))
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to open cron db: {}", e);
+                std::process::exit(1);
+            });
+        let store = CronStore::new(conn);
+        if let Err(e) = store.init_schema() {
+            eprintln!("Failed to init cron schema: {}", e);
+            std::process::exit(1);
+        }
+        store
+    };
+
     let session_id = uuid::Uuid::new_v4().to_string();
     let provider_name = config.provider_name().to_string();
     let default_model = config.default_model().to_string();
@@ -353,12 +482,20 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tokio::spawn(async move {
+                cron_scheduler_loop(handle).await;
+            });
+            Ok(())
+        })
         .manage(AppState {
             agent: Mutex::new(agent),
             config,
             memory,
             session_id: StdMutex::new(session_id),
             session_store,
+            cron_store,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -375,6 +512,12 @@ pub fn run() {
             session_delete,
             session_switch,
             reinforce,
+            cron_add,
+            cron_list,
+            cron_get,
+            cron_delete,
+            cron_toggle,
+            cron_run_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
