@@ -1,4 +1,8 @@
 pub mod openai;
+pub mod anthropic;
+pub mod nvidia;
+pub mod gemini;
+pub mod glm;
 
 use serde::{Deserialize, Serialize};
 

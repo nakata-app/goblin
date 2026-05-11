@@ -10,6 +10,10 @@ use agent::r#loop::AgentLoop;
 use crate::config::Config;
 use crate::cron::{CronStore, execute_script_job, CronJob};
 use provider::openai::OpenAIProvider;
+use provider::anthropic::AnthropicProvider;
+use provider::nvidia::NvidiaProvider;
+use provider::gemini::GeminiProvider;
+use provider::glm::GlmProvider;
 use memory::{MemoryDb, inject, compact, observe, reinforcement};
 use session::SessionStore;
 use tools::ToolRegistry;
@@ -379,22 +383,48 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
 }
 
 fn init_agent(config: &Config, tool_registry: ToolRegistry) -> Option<AgentLoop> {
-    if let Some(openai_cfg) = &config.providers.openai {
-        let provider = OpenAIProvider {
+    let provider: Box<dyn provider::Provider> = if let Some(openai_cfg) = &config.providers.openai {
+        Box::new(OpenAIProvider {
             api_key: openai_cfg.api_key.clone(),
             base_url: openai_cfg.base_url.clone(),
-        };
-        let agent = AgentLoop::new(config.clone(), Box::new(provider), tool_registry);
-        Some(agent)
-    } else if config.providers.anthropic.is_some() {
-        eprintln!("Anthropic provider not yet implemented");
-        None
-    } else if config.providers.nvidia.is_some() {
-        eprintln!("NVIDIA provider not yet implemented");
-        None
+        })
+    } else if let Some(anthro_cfg) = &config.providers.anthropic {
+        Box::new(AnthropicProvider {
+            api_key: anthro_cfg.api_key.clone(),
+            base_url: anthro_cfg.base_url.clone(),
+        })
+    } else if let Some(nvidia_cfg) = &config.providers.nvidia {
+        Box::new(NvidiaProvider {
+            api_key: nvidia_cfg.api_key.clone(),
+            base_url: nvidia_cfg.base_url.clone(),
+        })
+    } else if let Some(gemini_cfg) = &config.providers.gemini {
+        Box::new(GeminiProvider {
+            api_key: gemini_cfg.api_key.clone(),
+            base_url: gemini_cfg.base_url.clone(),
+        })
+    } else if let Some(glm_cfg) = &config.providers.glm {
+        Box::new(GlmProvider {
+            api_key: glm_cfg.api_key.clone(),
+            base_url: glm_cfg.base_url.clone(),
+        })
+    } else if let Some(generic) = config.providers.generic.first() {
+        if generic.provider_type == "anthropic" {
+            Box::new(AnthropicProvider {
+                api_key: generic.api_key.clone(),
+                base_url: generic.base_url.clone(),
+            })
+        } else {
+            Box::new(OpenAIProvider {
+                api_key: generic.api_key.clone(),
+                base_url: generic.base_url.clone(),
+            })
+        }
     } else {
-        None
-    }
+        return None;
+    };
+
+    Some(AgentLoop::new(config.clone(), provider, tool_registry))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -406,6 +436,9 @@ pub fn run() {
                 openai: None,
                 anthropic: None,
                 nvidia: None,
+                gemini: None,
+                glm: None,
+                generic: vec![],
                 auto_route: crate::config::AutoRouteConfig::default(),
             },
             agent: crate::config::AgentConfig::default(),

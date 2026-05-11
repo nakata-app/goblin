@@ -44,11 +44,13 @@
 - [x] E2E: edit_file fuzzy match dogrulama
 - [x] E2E: bash komut calistirma + timeout dogrulama
 
-## Faz 5: Provider Katmani 🔧
+## Faz 5: Provider Katmani ✅
 - [x] Rust: DeepSeek provider (OpenAI-compatible)
-- [ ] Rust: NVIDIA NIM provider
-- [ ] Rust: Anthropic provider
-- [ ] Rust: GLM provider
+- [x] Rust: NVIDIA NIM provider (OpenAI-compatible)
+- [x] Rust: Anthropic provider (Messages API)
+- [x] Rust: GLM provider (ZhipuAI, OpenAI-compatible)
+- [x] Rust: Gemini provider (Google AI)
+- [x] Rust: Generic provider (Ollama, vLLM, OpenRouter, Groq, Mistral, Together, Fireworks, Perplexity, xAI, LM Studio, LocalAI - her OpenAI-compatible endpoint)
 - [ ] Rust: auto-routing (fast/strong/vision)
 - [x] Rust: cost tracking (token sayimi + fiyat hesabi, deepseek/gpt/claude pricing)
 - [ ] Rust: credential pooling (coklu API key rotasyonu)

@@ -17,6 +17,10 @@ pub struct ProvidersConfig {
     pub openai: Option<OpenAIConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub nvidia: Option<NvidiaConfig>,
+    pub gemini: Option<GeminiConfig>,
+    pub glm: Option<GlmConfig>,
+    #[serde(default)]
+    pub generic: Vec<GenericConfig>,
     #[serde(default)]
     pub auto_route: AutoRouteConfig,
 }
@@ -53,6 +57,44 @@ pub struct NvidiaConfig {
 
 fn default_nvidia_base() -> String {
     "https://integrate.api.nvidia.com/v1".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeminiConfig {
+    pub api_key: String,
+    #[serde(default = "default_gemini_base")]
+    pub base_url: String,
+    pub models: Vec<String>,
+}
+
+fn default_gemini_base() -> String {
+    "https://generativelanguage.googleapis.com/v1beta".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlmConfig {
+    pub api_key: String,
+    #[serde(default = "default_glm_base")]
+    pub base_url: String,
+    pub models: Vec<String>,
+}
+
+fn default_glm_base() -> String {
+    "https://open.bigmodel.cn/api/paas/v4".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenericConfig {
+    pub name: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub models: Vec<String>,
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+}
+
+fn default_provider_type() -> String {
+    "openai".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +201,9 @@ impl Config {
                 openai: None,
                 anthropic: None,
                 nvidia: None,
+                gemini: None,
+                glm: None,
+                generic: vec![],
                 auto_route: AutoRouteConfig::default(),
             },
             agent: AgentConfig::default(),
@@ -171,7 +216,19 @@ impl Config {
         if self.providers.openai.is_some() { "openai" }
         else if self.providers.anthropic.is_some() { "anthropic" }
         else if self.providers.nvidia.is_some() { "nvidia" }
+        else if self.providers.gemini.is_some() { "gemini" }
+        else if self.providers.glm.is_some() { "glm" }
+        else if let Some(g) = self.providers.generic.first() { &g.name }
         else { "none" }
+    }
+
+    pub fn has_any_provider(&self) -> bool {
+        self.providers.openai.is_some()
+            || self.providers.anthropic.is_some()
+            || self.providers.nvidia.is_some()
+            || self.providers.gemini.is_some()
+            || self.providers.glm.is_some()
+            || !self.providers.generic.is_empty()
     }
 
     pub fn default_model(&self) -> &str {
