@@ -6,15 +6,21 @@ export interface Message {
   toolCalls?: ToolCall[];
 }
 
+export interface ToolCallFunction {
+  name: string;
+  arguments: string;
+}
+
 export interface ToolCall {
   id: string;
   name: string;
+  function: ToolCallFunction;
   args: Record<string, unknown>;
   result?: string;
   status: 'pending' | 'running' | 'done' | 'error';
 }
 
-export type GoblinState = 
+export type GoblinState =
   | 'idle'
   | 'thinking'
   | 'reading'

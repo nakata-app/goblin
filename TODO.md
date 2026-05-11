@@ -1,60 +1,60 @@
 # Goblin - Build Phases
 
-## Faz 1: Foundation (MEVCUT)
+## Faz 1: Foundation
 - [x] Tauri + React + TypeScript iskeleti
 - [x] Dark theme UI layout (sol: chat + karakter, sag: output)
 - [x] Goblin character strip (state-based emoji, placeholder)
 - [x] Chat input + mesaj baloncukları
 - [x] Status bar (model, turn, cost)
 - [ ] Zustand store'ları (chatStore, agentStore)
-- [ ] Tauri IPC: frontend <-> Rust backend bağlantısı
-- [ ] E2E test altyapısı (vitest + playwright)
+- [ ] Tauri IPC: frontend <-> Rust backend baglantisi
+- [ ] E2E test altyapisi (vitest + playwright)
 
 ## Faz 2: Agent Motoru
-- [ ] Rust: provider trait + OpenAI-compatible implementasyon
-- [ ] Rust: core conversation loop (LLM call -> tool dispatch -> result -> continue)
-- [ ] Rust: system prompt builder
-- [ ] Rust: context window management (compression)
-- [ ] Rust: tool dispatch framework (tool registry, schema, handler)
+- [x] Rust: provider trait + OpenAI-compatible implementasyon
+- [x] Rust: core conversation loop (LLM call -> tool dispatch -> result -> continue)
+- [x] Rust: system prompt builder
+- [x] Rust: context window management (token estimation + trim)
+- [x] Rust: tool dispatch framework (tool registry stub)
 - [ ] Frontend: useAgent hook (Tauri IPC ile agent loop)
-- [ ] E2E: agent loop tam tur testi (prompt -> LLM -> tool -> sonuç)
+- [ ] E2E: agent loop tam tur testi (prompt -> LLM -> tool -> sonuc)
 
 ## Faz 3: Memory + Mnemonics (Native)
 - [ ] Rust: SQLite schema (memories, observations, learned, sessions, jobs)
-- [ ] Rust: auto-observe (her tool call observation'a yazılır)
+- [ ] Rust: auto-observe (her tool call observation'a yazilir)
 - [ ] Rust: auto-inject (her turn relevant memory'ler system prompt'a eklenir)
 - [ ] Rust: reinforcement (tool reddi -> learned tablosu)
-- [ ] Rust: compact policy (30 gün erişilmeyen tier-1 arşiv)
-- [ ] Rust: per-proje scope (.goblin/ klasörü)
+- [ ] Rust: compact policy (30 gun erisilmeyen tier-1 arsiv)
+- [ ] Rust: per-proje scope (.goblin/ klasoru)
 - [ ] Rust: mnemonics_add, mnemonics_retrieve, mnemonics_observe, mnemonics_learn
-- [ ] E2E: memory write -> read -> inject doğrulama
-- [ ] E2E: observation otomatik kayıt doğrulama
-- [ ] E2E: reinforcement sayacı doğrulama
+- [ ] E2E: memory write -> read -> inject dogrulama
+- [ ] E2E: observation otomatik kayit dogrulama
+- [ ] E2E: reinforcement sayaci dogrulama
 
-## Faz 4: Dosya + Shell Tool'ları
-- [ ] Rust: read_file (satır numaralı, offset/limit)
-- [ ] Rust: write_file (tam üzerine yazma)
-- [ ] Rust: edit_file (fuzzy match, tek nokta değişiklik)
-- [ ] Rust: multi_edit (atomik çoklu düzenleme)
-- [ ] Rust: grep (ripgrep destekli içerik arama)
+## Faz 4: Dosya + Shell Tool'lari
+- [ ] Rust: read_file (satir numarali, offset/limit)
+- [ ] Rust: write_file (tam uzerine yazma)
+- [ ] Rust: edit_file (fuzzy match, tek nokta degisiklik)
+- [ ] Rust: multi_edit (atomik coklu duzenleme)
+- [ ] Rust: grep (ripgrep destekli icerik arama)
 - [ ] Rust: glob (dosya/dizin bulma)
-- [ ] Rust: bash (komut çalıştır, timeout, sandbox)
-- [ ] Rust: bash_background (arka plan süreç, notify)
-- [ ] E2E: dosya yaz -> oku -> karşılaştır
-- [ ] E2E: edit_file fuzzy match doğrulama
-- [ ] E2E: bash komut çalıştırma + timeout doğrulama
+- [ ] Rust: bash (komut calistir, timeout, sandbox)
+- [ ] Rust: bash_background (arka plan surec, notify)
+- [ ] E2E: dosya yaz -> oku -> karsilastir
+- [ ] E2E: edit_file fuzzy match dogrulama
+- [ ] E2E: bash komut calistirma + timeout dogrulama
 
-## Faz 5: Provider Katmanı
-- [ ] Rust: DeepSeek provider (OpenAI-compatible)
+## Faz 5: Provider Katmani
+- [ ] Rust: DeepSeek provider (OpenAI-compatible) -- done in Faz 2
 - [ ] Rust: NVIDIA NIM provider
 - [ ] Rust: Anthropic provider
 - [ ] Rust: GLM provider
 - [ ] Rust: auto-routing (fast/strong/vision)
-- [ ] Rust: cost tracking (token sayımı + fiyat hesabı)
-- [ ] Rust: credential pooling (çoklu API key rotasyonu)
-- [ ] E2E: her provider'a gerçek API call
-- [ ] E2E: auto-routing karar doğrulama
-- [ ] E2E: cost tracking doğrulama
+- [ ] Rust: cost tracking (token sayimi + fiyat hesabi)
+- [ ] Rust: credential pooling (coklu API key rotasyonu)
+- [ ] E2E: her provider'a gercek API call
+- [ ] E2E: auto-routing karar dogrulama
+- [ ] E2E: cost tracking dogrulama
 
 ## Faz 6: Session Sistemi
 - [ ] Rust: session store (SQLite)
@@ -62,67 +62,37 @@
 - [ ] Rust: FTS5 tam metin arama (session_search)
 - [ ] Rust: session export (JSONL)
 - [ ] Frontend: sidebar'da session listesi
-- [ ] E2E: session oluştur -> kapat -> resume -> mesajlar aynı
+- [ ] E2E: session olustur -> kapat -> resume -> mesajlar ayni
 
-## Faz 7: Web + Browser Tool'ları
+## Faz 7: Web + Browser Tool'lari
 - [ ] Rust: web_search (arama motoru)
-- [ ] Rust: web_fetch (URL içerik çekme)
+- [ ] Rust: web_fetch (URL icerik cekme)
 - [ ] Rust: browser_navigate, click, type, scroll, snapshot, press
 - [ ] Rust: browser_vision (screenshot + LLM analiz)
-- [ ] Rust: browser_console (JS çalıştır/okuma)
-- [ ] E2E: browser aç -> tıkla -> sonuç doğrula
+- [ ] Rust: browser_console (JS calistir/okuma)
+- [ ] E2E: browser ac -> tikla -> sonuc dogrula
 
 ## Faz 8: Cron Sistemi
 - [ ] Rust: job scheduler (schedule parse)
-- [ ] Rust: agent mode (prompt + skills yükle, çalıştır)
+- [ ] Rust: agent mode (prompt + skills yukle, calistir)
 - [ ] Rust: script mode (no_agent=true, stdout direkt)
-- [ ] Rust: delivery (origin, local, all, platform:chat_id)
-- [ ] Rust: notify_on_complete + watch_patterns
-- [ ] E2E: cron oluştur -> bekle -> çalıştı doğrula
 
-## Faz 9: Delegation
-- [ ] Rust: delegate_task (child process spawn)
-- [ ] Rust: max_concurrent_children (paralel limit)
-- [ ] Rust: toolset restriction (child sadece belirli tool'lar)
-- [ ] Rust: context injection (parent -> child bilgi geçişi)
-- [ ] Rust: max_spawn_depth (nested sınırı)
-- [ ] E2E: delegate -> child çalıştı -> sonuç döndü
+## Faz 9: Diger Tool'lar
+- [ ] delegation (delegate_task)
+- [ ] git (status, diff, commit, log, pr_create)
+- [ ] vision (vision_analyze)
+- [ ] tts (text_to_speech)
+- [ ] skills (skill_list, view, manage)
+- [ ] mcp (MCP client)
+- [ ] obsidian (vault read/write/search)
+- [ ] peer (CC inter-agent)
+- [ ] premortem (risk analysis)
+- [ ] eisenhower (matrix)
 
-## Faz 10: MCP + Obsidian + Peer
-- [ ] Rust: MCP client (stdio/HTTP server bağlantısı)
-- [ ] Rust: Obsidian vault (read, write, search)
-- [ ] Rust: peer communication (CC inter-agent mesajlaşma)
-- [ ] E2E: MCP server bağlan -> tool çağır -> sonuç al
-- [ ] E2E: Obsidian vault oku -> yaz -> doğrula
-
-## Faz 11: TTS + Vision + Skills
-- [ ] Rust: TTS (edge-tts, openai, elevenlabs, minimax)
-- [ ] Rust: vision_analyze (görüntü -> LLM)
-- [ ] Rust: skill sistemi (YAML frontmatter + markdown)
-- [ ] Rust: skill_list, skill_view, skill_manage
-- [ ] E2E: TTS ses üret -> dosya var mı doğrula
-- [ ] E2E: skill oluştur -> yükle -> doğrula
-
-## Faz 12: Git + Diğer Tool'lar
-- [ ] Rust: git_status, git_diff, git_commit, git_log
-- [ ] Rust: pr_create (branch + push + PR)
-- [ ] Rust: todo (görev listesi)
-- [ ] Rust: cost/budget (maliyet takibi)
-
-## Faz 13: Karakter Animasyonu
-- [ ] Sprite sheet entegrasyonu (kullanıcı ChatGPT ile üretecek)
-- [ ] CSS/SVG animasyonlar (düşünüyor, arıyor, yazıyor, hata, başarı)
-- [ ] Agent durum -> karakter durum eşleşmesi
-- [ ] Mikro animasyonlar (göz kırpma, nefes, sallanma)
-
-## Faz 14: Platform Delivery
-- [ ] Telegram gateway
-- [ ] Discord gateway
-- [ ] Slack gateway
-- [ ] SMS gateway
-
-## Kurallar
-- Reward hacking YASAK. Happy path test değil, gerçek E2E.
-- Her tool call DB'ye yazıldı mı? Inject edildi mi? Doğrula.
-- UI referans tasarım 1:1, ama bu bilgi kodda/yorumda/commit'te YOK.
-- Her faz bitince skill olarak kaydet, sonraki session'dan devam et.
+## Faz 10: UI Polish + Shipping
+- [ ] Command palette (/map, /cost, /sessions)
+- [ ] Syntax highlighting in output panel
+- [ ] Goblin sprite animation (CSS keyframes)
+- [ ] Keyboard shortcuts
+- [ ] Glass morphism effects
+- [ ] Tauri bundle (macOS .dmg)
