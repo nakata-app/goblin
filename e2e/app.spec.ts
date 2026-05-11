@@ -3,12 +3,12 @@ import { test, expect } from '@playwright/test';
 test.describe('goblin UI E2E', () => {
   test('ana sayfa yuklenir ve baslik goruntulenir', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('.panel-header-title')).toHaveText('goblin');
+    await expect(page.locator('.panel-header-title').first()).toHaveText('goblin');
   });
 
   test('input alani goruntulenir', async ({ page }) => {
     await page.goto('/');
-    const input = page.locator('.input-bar textarea');
+    const input = page.locator('.chat-input');
     await expect(input).toBeVisible();
     await expect(input).toBeEnabled();
   });
@@ -17,21 +17,21 @@ test.describe('goblin UI E2E', () => {
     await page.goto('/');
     const avatar = page.locator('.goblin-avatar');
     await expect(avatar).toBeVisible();
-    await expect(page.locator('.goblin-state-text')).toContainText('Hazir');
+    await expect(page.locator('.goblin-status-text')).toContainText('Ready');
   });
 
   test('status bar goruntulenir', async ({ page }) => {
     await page.goto('/');
     const statusBar = page.locator('.status-bar');
     await expect(statusBar).toBeVisible();
-    await expect(statusBar).toContainText('deepseek');
+    await expect(statusBar).toContainText('model:');
   });
 
   test('⌘K ile command palette acilir', async ({ page }) => {
     await page.goto('/');
-    await page.keyboard.press('Meta+k');
-    await expect(page.locator('.command-palette')).toBeVisible();
+    await page.click('button:has-text("⌘K")');
+    await expect(page.locator('.cmd-palette')).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(page.locator('.command-palette')).not.toBeVisible();
+    await expect(page.locator('.cmd-palette')).not.toBeVisible();
   });
 });

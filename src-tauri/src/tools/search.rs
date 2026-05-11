@@ -170,3 +170,159 @@ fn walk_dir(dir: &Path, cb: &mut dyn FnMut(&Path)) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn unique_dir() -> PathBuf {
+        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let pid = std::process::id();
+        let mut p = std::env::temp_dir();
+        p.push(format!("goblin_search_{}_{}", pid, id));
+        let _ = fs::create_dir_all(&p);
+        p
+    }
+
+    fn setup_test_files() -> (PathBuf, PathBuf) {
+        let dir = unique_dir();
+        fs::write(dir.join("a.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+        fs::write(dir.join("b.rs"), "fn helper() {\n    return 42;\n}\n").unwrap();
+        fs::write(dir.join("readme.md"), "# Test Project\n\nSome markdown.\n").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/c.rs"), "fn sub_func() {}\n").unwrap();
+        let cleanup_dir = dir.clone();
+        (dir, cleanup_dir)
+    }
+
+    fn cleanup(dir: &PathBuf) {
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn grep_finds_match() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_grep(json!({
+            "pattern": "println",
+            "path": dir.to_str().unwrap()
+        })).await.unwrap();
+
+        assert!(result.contains("a.rs"));
+        assert!(result.contains("println"));
+        assert!(!result.contains("b.rs"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn grep_with_include_filter() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_grep(json!({
+            "pattern": "fn",
+            "path": dir.to_str().unwrap(),
+            "include": "*.rs"
+        })).await.unwrap();
+
+        assert!(result.contains("a.rs") || result.contains("b.rs"));
+        assert!(!result.contains("readme.md"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn grep_no_match() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_grep(json!({
+            "pattern": "nonexistent_pattern_xyz",
+            "path": dir.to_str().unwrap()
+        })).await.unwrap();
+
+        assert!(result.contains("No matches"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn grep_invalid_regex() {
+        let result = handle_grep(json!({
+            "pattern": "[invalid",
+            "path": "."
+        })).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("regex"));
+    }
+
+    #[tokio::test]
+    async fn grep_max_results() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_grep(json!({
+            "pattern": "fn",
+            "path": dir.to_str().unwrap(),
+            "maxResults": 1
+        })).await.unwrap();
+
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines.len() <= 1);
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn glob_finds_files() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_glob(json!({
+            "pattern": "*.rs",
+            "path": dir.to_str().unwrap()
+        })).await.unwrap();
+
+        assert!(result.contains("a.rs"));
+        assert!(result.contains("b.rs"));
+        assert!(!result.contains("readme.md"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn glob_no_match() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_glob(json!({
+            "pattern": "*.py",
+            "path": dir.to_str().unwrap()
+        })).await.unwrap();
+
+        assert!(result.contains("No files"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn glob_subdirectory() {
+        let (dir, cd) = setup_test_files();
+        let result = handle_glob(json!({
+            "pattern": "**/*.rs",
+            "path": dir.to_str().unwrap()
+        })).await.unwrap();
+
+        assert!(result.contains("c.rs"));
+
+        cleanup(&cd);
+    }
+
+    #[tokio::test]
+    async fn grep_def_check() {
+        let def = grep_def();
+        assert_eq!(def.function.name, "grep");
+    }
+
+    #[tokio::test]
+    async fn glob_def_check() {
+        let def = glob_def();
+        assert_eq!(def.function.name, "glob");
+    }
+}

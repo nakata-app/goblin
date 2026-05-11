@@ -63,3 +63,76 @@ pub fn build_messages(
 
     messages
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Message;
+
+    #[test]
+    fn system_prompt_base_only() {
+        let prompt = build_system_prompt(None, &[], &[]);
+        assert!(prompt.contains("Goblin"));
+        assert!(prompt.contains("Tauri app"));
+        assert!(!prompt.contains("Project Context"));
+        assert!(!prompt.contains("Relevant Memories"));
+        assert!(!prompt.contains("User Preferences"));
+    }
+
+    #[test]
+    fn system_prompt_with_project_context() {
+        let prompt = build_system_prompt(Some("My Project v2"), &[], &[]);
+        assert!(prompt.contains("Project Context"));
+        assert!(prompt.contains("My Project v2"));
+    }
+
+    #[test]
+    fn system_prompt_with_memories() {
+        let mems = vec!["User prefers Rust".to_string(), "Use dark theme".to_string()];
+        let prompt = build_system_prompt(None, &mems, &[]);
+        assert!(prompt.contains("Relevant Memories"));
+        assert!(prompt.contains("User prefers Rust"));
+        assert!(prompt.contains("Use dark theme"));
+    }
+
+    #[test]
+    fn system_prompt_with_learned() {
+        let learned = vec!["Avoid npm".to_string()];
+        let prompt = build_system_prompt(None, &[], &learned);
+        assert!(prompt.contains("User Preferences"));
+        assert!(prompt.contains("Avoid npm"));
+    }
+
+    #[test]
+    fn system_prompt_all_fields() {
+        let mems = vec!["m1".to_string()];
+        let learned = vec!["l1".to_string()];
+        let prompt = build_system_prompt(Some("ctx"), &mems, &learned);
+        assert!(prompt.contains("Project Context"));
+        assert!(prompt.contains("Relevant Memories"));
+        assert!(prompt.contains("User Preferences"));
+    }
+
+    #[test]
+    fn build_messages_structure() {
+        let existing = vec![
+            Message { role: "user".into(), content: "previous".into(), tool_calls: None, tool_call_id: None },
+        ];
+        let result = build_messages("sys-prompt", &existing, "new message");
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[0].content, "sys-prompt");
+        assert_eq!(result[1].role, "user");
+        assert_eq!(result[1].content, "previous");
+        assert_eq!(result[2].role, "user");
+        assert_eq!(result[2].content, "new message");
+    }
+
+    #[test]
+    fn build_messages_no_existing() {
+        let result = build_messages("sys", &[], "hello");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[1].role, "user");
+    }
+}

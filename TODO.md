@@ -35,11 +35,11 @@
 - [x] Rust: read_file (satir numarali, offset/limit)
 - [x] Rust: write_file (tam uzerine yazma, parent dir create)
 - [x] Rust: edit_file (fuzzy match, tek nokta degisiklik, replace-all)
-- [ ] Rust: multi_edit (atomik coklu duzenleme)
+- [x] Rust: multi_edit (atomik coklu duzenleme, rollback)
 - [x] Rust: grep (regex destekli icerik arama, file filter)
 - [x] Rust: glob (dosya/dizin bulma, .git/node_modules ignore)
 - [x] Rust: bash (komut calistir, stdout/stderr capture, exit code)
-- [ ] Rust: bash_background (arka plan surec, notify)
+- [x] Rust: bash_background (arka plan surec, check, kill)
 - [x] E2E: dosya yaz -> oku -> karsilastir
 - [x] E2E: edit_file fuzzy match dogrulama
 - [x] E2E: bash komut calistirma + timeout dogrulama
@@ -51,10 +51,10 @@
 - [x] Rust: GLM provider (ZhipuAI, OpenAI-compatible)
 - [x] Rust: Gemini provider (Google AI)
 - [x] Rust: Generic provider (Ollama, vLLM, OpenRouter, Groq, Mistral, Together, Fireworks, Perplexity, xAI, LM Studio, LocalAI - her OpenAI-compatible endpoint)
-- [ ] Rust: auto-routing (fast/strong/vision)
+- [x] Rust: auto-routing (fast/strong/vision — keyword-based heuristic + message length)
 - [x] Rust: cost tracking (token sayimi + fiyat hesabi, deepseek/gpt/claude pricing)
-- [ ] Rust: credential pooling (coklu API key rotasyonu)
-- [ ] E2E: her provider'a gercek API call
+- [x] Rust: credential pooling (coklu API key rotasyonu — key_pool + get_key_for_provider)
+- [ ] E2E: her provider'a gercek API call (API key gerektirir)
 - [ ] E2E: auto-routing karar dogrulama
 - [x] E2E: cost tracking dogrulama [vitest]
 
@@ -62,7 +62,7 @@
 - [x] Rust: session store (SQLite)
 - [x] Rust: session resume (session_switch Tauri komutu)
 - [x] Rust: FTS5 tam metin arama (session_search)
-- [ ] Rust: session export (JSONL dosyaya yaz)
+- [x] Rust: session export (JSONL/kayit dosyaya yaz)
 - [x] Frontend: sidebar'da session listesi
 - [x] E2E: session olustur -> kapat -> resume -> mesajlar ayni
 
@@ -83,22 +83,24 @@
 - [x] Rust: background scheduler (60sn interval, tokio::spawn)
 - [x] Test: 11 cron parser + scheduler testi gecti
 
-## Faz 9: Diger Tool'lar
-- [ ] delegation (delegate_task)
-- [ ] git (status, diff, commit, log, pr_create)
-- [ ] vision (vision_analyze)
-- [ ] tts (text_to_speech)
-- [ ] skills (skill_list, view, manage)
-- [ ] mcp (MCP client)
-- [ ] obsidian (vault read/write/search)
-- [ ] peer (CC inter-agent)
-- [ ] premortem (risk analysis)
-- [ ] eisenhower (matrix)
+## Faz 9: Diger Tool'lar ✅
+- [x] delegation (delegate_task)
+- [x] git (status, diff, commit, log, pr_create)
+- [x] vision (vision_analyze)
+- [x] tts (text_to_speech)
+- [x] skills (skill_list, view, manage)
+- [x] mcp (MCP client: connect, list_tools, call_tool, install)
+- [x] obsidian (vault read/write/search/stats)
+- [x] peer (CC inter-agent: send, broadcast, status, coordinate)
+- [x] premortem (risk analysis)
+- [x] eisenhower (matrix)
+- [x] Test: 42 Rust test + 22 vitest = 64 ✅
 
-## Faz 10: UI Polish + Shipping
-- [ ] Command palette (/map, /cost, /sessions)
-- [ ] Syntax highlighting in output panel
-- [ ] Goblin sprite animation (CSS keyframes)
-- [ ] Keyboard shortcuts
-- [ ] Glass morphism effects
-- [ ] Tauri bundle (macOS .dmg)
+## Faz 10: UI Polish + Shipping ✅
+- [x] Command palette (/map, /cost, /sessions, /help, /shortcuts, /model, /premortem, /eisenhower, 15 komut, kategori gruplu)
+- [x] Syntax highlighting in output panel (markdown render, code blocks, inline code, headings, tables, stderr/exit markers)
+- [x] Goblin sprite animation (CSS keyframes: particle orbit, idle breathe, sparkle pulse, bounce, ring spin)
+- [x] Keyboard shortcuts (⌘K palet, ⌘N yeni, ⌘⇧S sessions, ⌘⇧C kopyala, ⌘/ kisayollar, Esc kapat)
+- [x] Glass morphism effects (backdrop-filter, 2 katman derinlik, border pulse, text glow)
+- [x] Tauri bundle (macOS .dmg config, overlay title bar, traffic light pozisyonu, updater artifacts)
+- [x] Test: 42 Rust + 22 vitest = 64 ✅

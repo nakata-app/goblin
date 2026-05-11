@@ -16,7 +16,8 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    host: true,
+    allowedHosts: ['.serveousercontent.com', '.trycloudflare.com'],
     hmr: host
       ? {
           protocol: "ws",

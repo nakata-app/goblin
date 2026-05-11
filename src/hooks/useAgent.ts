@@ -43,7 +43,7 @@ export function useAgent() {
       try {
         const response = await invoke<AgentResponse>('send_message', {
           message: text,
-          model: model,
+          model: model === 'auto' ? null : model,
         });
 
         const assistantMsg: Message = {

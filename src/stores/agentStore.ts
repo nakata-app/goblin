@@ -23,7 +23,7 @@ interface AgentState {
 
 export const useAgentStore = create<AgentState>((set) => ({
   goblinState: 'idle',
-  model: 'deepseek-v4-flash',
+  model: 'auto',
   cost: 0,
   turnCount: 0,
   tokensIn: 0,

@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'react';
 import type { Message } from '../types';
 
-function formatTime(ts: number): string {
+export function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -24,8 +24,8 @@ export function ChatPanel({ messages, onDislike }: ChatPanelProps) {
       {messages.length === 0 && (
         <div className="chat-empty">
           <div className="chat-empty-icon">👺</div>
-          <div className="chat-empty-title">Goblin hazir</div>
-          <div className="chat-empty-sub">Bir sey sor veya bir gorev ver.</div>
+          <div className="chat-empty-title">Goblin ready</div>
+          <div className="chat-empty-sub">Ask something or give a task.</div>
         </div>
       )}
       {messages.map((msg) => (

@@ -14,12 +14,12 @@ export function Sidebar({ isOpen, onToggle, sessions, activeSessionId, onSelectS
       <div className={`sidebar-overlay ${isOpen ? 'sidebar-open' : ''}`} onClick={onToggle} />
       <div className={`sidebar ${isOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-header">
-          <span className="sidebar-title">Oturumlar</span>
+          <span className="sidebar-title">Sessions</span>
           <button className="sidebar-close" onClick={onToggle}>✕</button>
         </div>
         <div className="sidebar-list">
           {sessions.length === 0 && (
-            <div className="sidebar-empty">Henuz oturum yok</div>
+            <div className="sidebar-empty">No sessions yet</div>
           )}
           {sessions.map((s) => (
             <div
@@ -27,9 +27,9 @@ export function Sidebar({ isOpen, onToggle, sessions, activeSessionId, onSelectS
               className={`sidebar-item ${s.id === activeSessionId ? 'sidebar-item-active' : ''}`}
               onClick={() => onSelectSession(s.id)}
             >
-              <div className="sidebar-item-title">{s.title || 'Isimsiz oturum'}</div>
+              <div className="sidebar-item-title">{s.title || 'Untitled session'}</div>
               <div className="sidebar-item-meta">
-                {s.messageCount} msj &middot; {s.model || '?'}
+                {s.messageCount} msgs &middot; {s.model || '?'}
               </div>
             </div>
           ))}

@@ -28,6 +28,8 @@ pub struct ProvidersConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAIConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     #[serde(default = "default_openai_base")]
     pub base_url: String,
     pub models: Vec<String>,
@@ -40,6 +42,8 @@ fn default_openai_base() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     #[serde(default = "default_anthropic_base")]
     pub base_url: String,
 }
@@ -51,6 +55,8 @@ fn default_anthropic_base() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NvidiaConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     #[serde(default = "default_nvidia_base")]
     pub base_url: String,
 }
@@ -62,6 +68,8 @@ fn default_nvidia_base() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeminiConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     #[serde(default = "default_gemini_base")]
     pub base_url: String,
     pub models: Vec<String>,
@@ -74,6 +82,8 @@ fn default_gemini_base() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlmConfig {
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     #[serde(default = "default_glm_base")]
     pub base_url: String,
     pub models: Vec<String>,
@@ -87,6 +97,8 @@ fn default_glm_base() -> String {
 pub struct GenericConfig {
     pub name: String,
     pub api_key: String,
+    #[serde(default)]
+    pub key_pool: Vec<String>,
     pub base_url: String,
     pub models: Vec<String>,
     #[serde(default = "default_provider_type")]
@@ -234,6 +246,75 @@ impl Config {
     pub fn default_model(&self) -> &str {
         &self.agent.default_model
     }
+
+    pub fn auto_route_model(&self, user_message: &str, has_image: bool) -> &str {
+        if !self.providers.auto_route.enabled {
+            return &self.agent.default_model;
+        }
+
+        if has_image {
+            if let Some(ref vm) = self.providers.auto_route.vision_model {
+                return vm;
+            }
+            // Fall back to strong model if no vision model configured
+            return &self.providers.auto_route.strong_model;
+        }
+
+        let msg_lower = user_message.to_lowercase();
+        let strong_keywords = [
+            "analyze", "explain", "debug", "refactor", "architecture",
+            "design", "review", "optimize", "implement", "migration",
+            "complex", "security", "vulnerability", "race condition",
+            "deadlock", "algorithm", "premortem", "eisenhower",
+            "coordinate", "delegate", "multi_edit", "commit",
+        ];
+
+        let is_long = user_message.len() > 200;
+        let has_strong_signal = strong_keywords.iter().any(|kw| msg_lower.contains(kw));
+
+        if is_long || has_strong_signal {
+            &self.providers.auto_route.strong_model
+        } else {
+            &self.providers.auto_route.fast_model
+        }
+    }
+
+    pub fn get_key_for_provider(&self, provider_name: &str, index: usize) -> Option<&str> {
+        let pool: &[String] = match provider_name {
+            "openai" => self.providers.openai.as_ref().map_or(&[], |c| &c.key_pool),
+            "anthropic" => self.providers.anthropic.as_ref().map_or(&[], |c| &c.key_pool),
+            "nvidia" => self.providers.nvidia.as_ref().map_or(&[], |c| &c.key_pool),
+            "gemini" => self.providers.gemini.as_ref().map_or(&[], |c| &c.key_pool),
+            "glm" => self.providers.glm.as_ref().map_or(&[], |c| &c.key_pool),
+            _ => {
+                for g in &self.providers.generic {
+                    if g.name == provider_name {
+                        return g.key_pool.get(index).map(|s| s.as_str());
+                    }
+                }
+                &[]
+            }
+        };
+        pool.get(index).map(|s| s.as_str())
+    }
+
+    pub fn key_pool_size(&self, provider_name: &str) -> usize {
+        match provider_name {
+            "openai" => self.providers.openai.as_ref().map_or(0, |c| c.key_pool.len()),
+            "anthropic" => self.providers.anthropic.as_ref().map_or(0, |c| c.key_pool.len()),
+            "nvidia" => self.providers.nvidia.as_ref().map_or(0, |c| c.key_pool.len()),
+            "gemini" => self.providers.gemini.as_ref().map_or(0, |c| c.key_pool.len()),
+            "glm" => self.providers.glm.as_ref().map_or(0, |c| c.key_pool.len()),
+            _ => {
+                for g in &self.providers.generic {
+                    if g.name == provider_name {
+                        return g.key_pool.len();
+                    }
+                }
+                0
+            }
+        }
+    }
 }
 
 fn dirs_next() -> Option<PathBuf> {
@@ -243,4 +324,206 @@ fn dirs_next() -> Option<PathBuf> {
         return Some(p);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        Config {
+            providers: ProvidersConfig {
+                openai: Some(OpenAIConfig {
+                    api_key: "sk-test".into(),
+                    key_pool: vec!["key1".into(), "key2".into()],
+                    base_url: "https://api.deepseek.com/v1".into(),
+                    models: vec!["deepseek-v4-pro".into()],
+                }),
+                anthropic: None,
+                nvidia: None,
+                gemini: None,
+                glm: None,
+                generic: vec![],
+                auto_route: AutoRouteConfig {
+                    enabled: true,
+                    fast_model: "deepseek-v4-flash".into(),
+                    strong_model: "deepseek-v4-pro".into(),
+                    vision_model: Some("llama-vision".into()),
+                },
+            },
+            agent: AgentConfig {
+                default_model: "deepseek-v4-flash".into(),
+                max_turns: 10,
+                max_tokens: 8192,
+                temperature: 0.0,
+            },
+            tools: ToolsConfig::default(),
+            memory: MemoryConfig::default(),
+        }
+    }
+
+    fn empty_config() -> Config {
+        Config {
+            providers: ProvidersConfig {
+                openai: None, anthropic: None, nvidia: None, gemini: None, glm: None,
+                generic: vec![],
+                auto_route: AutoRouteConfig::default(),
+            },
+            agent: AgentConfig::default(),
+            tools: ToolsConfig::default(),
+            memory: MemoryConfig::default(),
+        }
+    }
+
+    #[test]
+    fn has_any_provider_with_openai() {
+        let cfg = test_config();
+        assert!(cfg.has_any_provider());
+    }
+
+    #[test]
+    fn has_any_provider_empty() {
+        let cfg = empty_config();
+        assert!(!cfg.has_any_provider());
+    }
+
+    #[test]
+    fn has_any_provider_with_generic() {
+        let mut cfg = empty_config();
+        cfg.providers.generic = vec![GenericConfig {
+            name: "ollama".into(),
+            api_key: "k".into(),
+            key_pool: vec![],
+            base_url: "http://localhost:11434".into(),
+            models: vec!["llama3".into()],
+            provider_type: "openai".into(),
+        }];
+        assert!(cfg.has_any_provider());
+    }
+
+    #[test]
+    fn provider_name_openai() {
+        let cfg = test_config();
+        assert_eq!(cfg.provider_name(), "openai");
+    }
+
+    #[test]
+    fn provider_name_empty() {
+        let cfg = empty_config();
+        assert_eq!(cfg.provider_name(), "none");
+    }
+
+    #[test]
+    fn auto_route_disabled_falls_back_to_default() {
+        let mut cfg = test_config();
+        cfg.providers.auto_route.enabled = false;
+        let model = cfg.auto_route_model("analyze complex code refactor", false);
+        assert_eq!(model, "deepseek-v4-flash"); // default model, not strong
+    }
+
+    #[test]
+    fn auto_route_strong_keyword() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("please analyze this code", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_long_message() {
+        let cfg = test_config();
+        let long = "x".repeat(201);
+        let model = cfg.auto_route_model(&long, false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_short_simple() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("hello how are you", false);
+        assert_eq!(model, "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn auto_route_vision_model() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("what is this image", true);
+        assert_eq!(model, "llama-vision");
+    }
+
+    #[test]
+    fn auto_route_vision_no_model_falls_to_strong() {
+        let mut cfg = test_config();
+        cfg.providers.auto_route.vision_model = None;
+        let model = cfg.auto_route_model("describe image", true);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn get_key_for_provider_known() {
+        let cfg = test_config();
+        assert_eq!(cfg.get_key_for_provider("openai", 0), Some("key1"));
+        assert_eq!(cfg.get_key_for_provider("openai", 1), Some("key2"));
+        assert_eq!(cfg.get_key_for_provider("openai", 2), None);
+    }
+
+    #[test]
+    fn get_key_for_provider_unknown() {
+        let cfg = test_config();
+        assert_eq!(cfg.get_key_for_provider("nonexistent", 0), None);
+    }
+
+    #[test]
+    fn key_pool_size() {
+        let cfg = test_config();
+        assert_eq!(cfg.key_pool_size("openai"), 2);
+        assert_eq!(cfg.key_pool_size("unknown"), 0);
+    }
+
+    #[test]
+    fn default_model_returns_agent_default() {
+        let cfg = test_config();
+        assert_eq!(cfg.default_model(), "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn auto_route_premortem_triggers_strong() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("bu plan icin premortem yap", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_eisenhower_triggers_strong() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("eisenhower matrisi cikar", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_delegate_triggers_strong() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("delegate this task", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_multi_edit_triggers_strong() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("multi_edit the files", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_security_triggers_strong() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("check for security vulnerability", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn auto_route_case_insensitive() {
+        let cfg = test_config();
+        let model = cfg.auto_route_model("ANALYZE THIS CODE", false);
+        assert_eq!(model, "deepseek-v4-pro");
+    }
 }

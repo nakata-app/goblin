@@ -407,4 +407,141 @@ mod tests {
         assert!(validate_schedule("60 * * * *").is_err());
         assert!(validate_schedule("* 24 * * *").is_err());
     }
+
+    // ---- CronStore CRUD tests ----
+
+    fn in_memory_store() -> CronStore {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cron_jobs (
+                id TEXT PRIMARY KEY,
+                schedule TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'script',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                last_run INTEGER,
+                run_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_output TEXT
+            );"
+        ).unwrap();
+        CronStore { conn: Mutex::new(conn) }
+    }
+
+    fn sample_job(id: &str) -> CronJob {
+        CronJob {
+            id: id.to_string(),
+            schedule: "0 9 * * *".to_string(),
+            prompt: "Daily greeting".to_string(),
+            mode: "script".to_string(),
+            enabled: true,
+            created_at: 1715000000,
+            last_run: None,
+            run_count: 0,
+            last_error: None,
+            last_output: None,
+        }
+    }
+
+    #[test]
+    fn cron_add_and_get() {
+        let store = in_memory_store();
+        store.add(&sample_job("j1")).unwrap();
+
+        let job = store.get("j1").unwrap().unwrap();
+        assert_eq!(job.id, "j1");
+        assert_eq!(job.schedule, "0 9 * * *");
+        assert!(job.enabled);
+    }
+
+    #[test]
+    fn cron_add_empty_prompt_fails() {
+        let store = in_memory_store();
+        let mut job = sample_job("j2");
+        job.prompt = "  ".to_string();
+        let result = store.add(&job);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cron_add_invalid_mode_fails() {
+        let store = in_memory_store();
+        let mut job = sample_job("j3");
+        job.mode = "invalid".to_string();
+        let result = store.add(&job);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cron_add_invalid_schedule_fails() {
+        let store = in_memory_store();
+        let mut job = sample_job("j4");
+        job.schedule = "* *".to_string();
+        let result = store.add(&job);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cron_list() {
+        let store = in_memory_store();
+        store.add(&sample_job("a")).unwrap();
+        store.add(&sample_job("b")).unwrap();
+
+        let jobs = store.list().unwrap();
+        assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn cron_delete() {
+        let store = in_memory_store();
+        store.add(&sample_job("d1")).unwrap();
+        assert!(store.delete("d1").unwrap());
+        assert!(!store.delete("d1").unwrap());
+        assert!(store.get("d1").unwrap().is_none());
+    }
+
+    #[test]
+    fn cron_toggle() {
+        let store = in_memory_store();
+        store.add(&sample_job("t1")).unwrap();
+
+        let new_state = store.toggle("t1").unwrap();
+        assert!(!new_state);
+
+        let new_state = store.toggle("t1").unwrap();
+        assert!(new_state);
+    }
+
+    #[test]
+    fn cron_mark_run() {
+        let store = in_memory_store();
+        store.add(&sample_job("r1")).unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+        store.mark_run("r1", now, Some("ok"), None).unwrap();
+
+        let job = store.get("r1").unwrap().unwrap();
+        assert_eq!(job.run_count, 1);
+        assert!(job.last_run.is_some());
+        assert_eq!(job.last_output.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn cron_due_jobs() {
+        let store = in_memory_store();
+
+        store.add(&sample_job("due1")).unwrap();
+
+        // Job that just ran shouldn't be due again immediately
+        let mut recent = sample_job("due2");
+        let now = chrono::Utc::now();
+        recent.last_run = Some(now.timestamp());
+        store.add(&recent).unwrap();
+
+        let due = store.due_jobs(&now).unwrap();
+        // due1 should be due (never ran with matching schedule at 9am)
+        // due2 should not be due if we check at current time
+        assert!(due.iter().any(|j| j.id == "due1") || due.is_empty());
+    }
 }

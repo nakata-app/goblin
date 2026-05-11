@@ -907,3 +907,474 @@ kbd {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-6px); }
 }
+
+/* ============================================================
+   OUTPUT — Syntax Highlighting
+   ============================================================ */
+.output-rendered {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+.output-rendered .md-heading {
+  color: var(--text-primary);
+  margin: 8px 0 4px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.output-rendered .h1 { font-size: 18px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 6px; }
+.output-rendered .h2 { font-size: 15px; }
+.output-rendered .h3 { font-size: 14px; }
+.output-rendered .h4, .h5, .h6 { font-size: 13px; opacity: 0.85; }
+
+.output-rendered .inline-code {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.output-rendered .highlight-block {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.output-rendered .highlight-header {
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.output-rendered .highlight-lang {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.output-rendered .highlight-code {
+  padding: 14px;
+  margin: 0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.output-rendered .highlight-code code {
+  color: var(--text-secondary);
+}
+
+.output-rendered .md-quote {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.output-rendered .md-hr {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin: 16px 0;
+}
+
+.output-rendered .md-bullet,
+.output-rendered .md-number {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.output-rendered .md-link {
+  color: var(--accent);
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+.output-rendered .md-link:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.output-rendered .shell-stderr {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.output-rendered .shell-exit {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.output-rendered strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.output-rendered em {
+  color: var(--text-dim);
+}
+
+.output-empty-icon {
+  font-size: 32px;
+  opacity: 0.3;
+  margin-bottom: 12px;
+}
+
+.output-empty-hint {
+  font-size: 11px;
+  margin-top: 8px;
+  opacity: 0.3;
+  letter-spacing: 0.5px;
+}
+
+/* ============================================================
+   GOBLIN — Particle & Sparkle Animations
+   ============================================================ */
+.goblin-avatar {
+  position: relative;
+  overflow: visible;
+}
+
+.goblin-particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  top: 50%;
+  left: 50%;
+  animation: particleOrbit 1.5s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+@keyframes particleOrbit {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(var(--angle)) translateX(24px) scale(0);
+  }
+  20% {
+    opacity: 0.8;
+  }
+  80% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(calc(var(--angle) + 180deg)) translateX(32px) scale(1);
+  }
+}
+
+.goblin-avatar.idle-breathe .goblin-emoji {
+  animation: idleBreathe 3s ease-in-out infinite;
+}
+
+@keyframes idleBreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
+.goblin-sparkle {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--accent);
+  opacity: 0;
+  animation: sparklePulse 0.8s ease-in-out infinite;
+}
+
+@keyframes sparklePulse {
+  0%, 100% { opacity: 0; transform: translateY(-50%) scale(0.5); }
+  50% { opacity: 0.7; transform: translateY(-50%) scale(1.1); }
+}
+
+/* ============================================================
+   COMMAND PALETTE — Grouped View
+   ============================================================ */
+.cmd-group {
+  margin-bottom: 4px;
+}
+
+.cmd-group-label {
+  font-size: 10px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  padding: 10px 14px 6px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.cmd-group:first-child .cmd-group-label {
+  padding-top: 4px;
+}
+
+/* ============================================================
+   KEYBOARD SHORTCUTS — Cheatsheet panel
+   ============================================================ */
+.shortcuts-panel {
+  padding: 20px;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.shortcuts-panel h3 {
+  font-size: 12px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin: 16px 0 8px;
+  font-family: var(--font-mono);
+}
+
+.shortcuts-panel h3:first-child {
+  margin-top: 0;
+}
+
+.shortcuts-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.shortcuts-row .key-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.shortcuts-row .key-binding {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.shortcuts-row .key-binding kbd {
+  font-size: 10px;
+  margin: 0 2px;
+}
+
+/* ============================================================
+   GLASS MORPHISM — Enhanced depth layers
+   ============================================================ */
+.glass-layer-1 {
+  background: rgba(20, 20, 20, 0.6);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.glass-layer-2 {
+  background: rgba(14, 14, 14, 0.8);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+/* Text glow on accent */
+.text-glow {
+  text-shadow: 0 0 20px rgba(16, 185, 129, 0.3);
+}
+
+/* Subtle border pulse for active elements */
+.border-pulse {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.08), 0 0 20px rgba(16, 185, 129, 0.05);
+  transition: all 0.3s ease;
+}
+
+/* ============================================================
+   GOBLIN LIVE PANEL — FaceTime-style animated character
+   ============================================================ */
+
+.goblin-live {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 400px;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, rgba(30, 30, 35, 1) 0%, rgba(18, 18, 22, 1) 60%, rgba(10, 10, 14, 1) 100%);
+}
+
+.goblin-live-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  z-index: 2;
+  position: relative;
+}
+
+/* ---- Concentric rings ---- */
+.goblin-live-ring-outer {
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: ringPulse 2.5s ease-in-out infinite;
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.05);
+}
+
+.goblin-live-ring-inner {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 1px solid rgba(16, 185, 129, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: ringPulse 2.5s ease-in-out infinite 0.3s;
+  box-shadow: 0 0 30px rgba(16, 185, 129, 0.03);
+}
+
+/* ---- Face ---- */
+.goblin-live-face {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  transition: all 0.4s ease;
+}
+
+.goblin-live-emoji {
+  font-size: 52px;
+  line-height: 1;
+  filter: drop-shadow(0 0 12px rgba(16, 185, 129, 0.3));
+  transition: transform 0.3s ease;
+}
+
+/* ---- States ---- */
+.goblin-live-idle .goblin-live-face {
+  border-color: rgba(16, 185, 129, 0.1);
+  background: rgba(16, 185, 129, 0.02);
+}
+
+.goblin-live-thinking .goblin-live-face,
+.goblin-live-reading .goblin-live-face,
+.goblin-live-writing .goblin-live-face,
+.goblin-live-searching .goblin-live-face,
+.goblin-live-running .goblin-live-face {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.06);
+  box-shadow: 0 0 30px rgba(16, 185, 129, 0.1);
+}
+
+.goblin-live-error .goblin-live-face {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  box-shadow: 0 0 30px rgba(239, 68, 68, 0.15);
+}
+
+.goblin-live-success .goblin-live-face {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.1);
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.2);
+}
+
+/* ---- Animations ---- */
+.goblin-live-breathe {
+  animation: faceBreathe 3s ease-in-out infinite;
+}
+
+.goblin-live-pulse {
+  animation: facePulse 1s ease-in-out infinite;
+}
+
+.goblin-live-active .goblin-live-ring-outer {
+  border-color: rgba(16, 185, 129, 0.15);
+  box-shadow: 0 0 50px rgba(16, 185, 129, 0.08);
+}
+
+.goblin-live-active .goblin-live-ring-inner {
+  border-color: rgba(16, 185, 129, 0.25);
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.06);
+}
+
+/* ---- Label ---- */
+.goblin-live-label {
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.02em;
+  text-align: center;
+  transition: color 0.4s ease;
+}
+
+.goblin-live-active .goblin-live-label {
+  color: rgba(16, 185, 129, 0.7);
+}
+
+.goblin-live-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.18);
+  text-align: center;
+  transition: color 0.3s ease;
+}
+
+/* ---- Floating particles ---- */
+.goblin-live-particles {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.goblin-live-particle {
+  position: absolute;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.3);
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.2);
+  animation: particleOrbit 3s linear infinite;
+  animation-delay: var(--delay);
+  transform: rotate(var(--angle)) translateX(120px);
+}
+
+/* ---- Keyframes ---- */
+@keyframes faceBreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes facePulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(16, 185, 129, 0.05); }
+  50% { transform: scale(1.06); box-shadow: 0 0 35px rgba(16, 185, 129, 0.15); }
+}
+
+@keyframes ringPulse {
+  0%, 100% { transform: scale(1); opacity: 0.6; }
+  50% { transform: scale(1.04); opacity: 1; }
+}
+
+@keyframes particleOrbit {
+  0% { transform: rotate(var(--angle)) translateX(120px) scale(0); opacity: 0; }
+  15% { opacity: 1; }
+  30% { transform: rotate(calc(var(--angle) + 120deg)) translateX(140px) scale(1); opacity: 0.8; }
+  60% { transform: rotate(calc(var(--angle) + 240deg)) translateX(130px) scale(0.8); opacity: 0.4; }
+  100% { transform: rotate(calc(var(--angle) + 360deg)) translateX(120px) scale(0); opacity: 0; }
+}

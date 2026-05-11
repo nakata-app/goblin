@@ -73,8 +73,15 @@ async fn send_message(
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
 
+    let selected_model = if model.is_none() {
+        let auto = state.config.auto_route_model(&message, false);
+        Some(auto.to_string())
+    } else {
+        model
+    };
+
     let response = agent
-        .send_message(&message, None, &memories, &learned, model.as_deref())
+        .send_message(&message, None, &memories, &learned, selected_model.as_deref())
         .await
         .map_err(|e| format!("Agent error: {}", e))?;
 
@@ -342,6 +349,56 @@ async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, 
     result
 }
 
+#[tauri::command]
+async fn session_export(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    output_path: Option<String>,
+) -> Result<String, String> {
+    let session_id = if let Some(sid) = id {
+        sid
+    } else {
+        state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone()
+    };
+
+    let session = state.session_store.get(&session_id)?
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+    let messages = session.messages.unwrap_or_default();
+    let output = format!(
+        "# Goblin Session Export\n\
+         # ID: {id}\n\
+         # Title: {title}\n\
+         # Model: {model:?}\n\
+         # Provider: {provider:?}\n\
+         # Started: {started}\n\
+         # Ended: {ended:?}\n\
+         # Cost: ${cost:.4}\n\
+         # Tokens: {tokens_in} in / {tokens_out} out\n\n\
+         {messages}",
+        id = session.id,
+        title = session.title.as_deref().unwrap_or("untitled"),
+        model = session.model,
+        provider = session.provider,
+        started = session.started_at,
+        ended = session.ended_at,
+        cost = session.cost,
+        tokens_in = session.tokens_in,
+        tokens_out = session.tokens_out,
+        messages = messages,
+    );
+
+    let path = output_path.unwrap_or_else(|| {
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        format!("goblin_session_{}_{}.jsonl", ts, &session_id[..8])
+    });
+
+    std::fs::write(&path, &output)
+        .map_err(|e| format!("Failed to write export file {}: {}", path, e))?;
+
+    Ok(format!("Session exported to {} ({:.1} KB)", path, output.len() as f64 / 1024.0))
+}
+
 async fn cron_scheduler_loop(app: tauri::AppHandle) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -551,7 +608,75 @@ pub fn run() {
             cron_delete,
             cron_toggle,
             cron_run_now,
+            session_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use provider::Message;
+
+    #[test]
+    fn calculate_cost_deepseek() {
+        let cost = calculate_cost(1_000_000, 1_000_000, "deepseek-v4-pro");
+        // in: 0.28, out: 1.10
+        assert!((cost - 1.38).abs() < 0.01);
+    }
+
+    #[test]
+    fn calculate_cost_gpt4() {
+        let cost = calculate_cost(1_000_000, 1_000_000, "gpt-4-turbo");
+        // in: 3.0, out: 15.0
+        assert!((cost - 18.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn calculate_cost_claude() {
+        let cost = calculate_cost(1_000_000, 1_000_000, "claude-3-opus");
+        assert!((cost - 18.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn calculate_cost_unknown_falls_to_deepseek() {
+        let cost = calculate_cost(1_000_000, 1_000_000, "unknown-model");
+        assert!((cost - 1.38).abs() < 0.01);
+    }
+
+    #[test]
+    fn calculate_cost_zero_tokens() {
+        let cost = calculate_cost(0, 0, "deepseek-v4-flash");
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn serialize_deserialize_round_trip() {
+        let msgs = vec![
+            Message { role: "system".into(), content: "sys prompt".into(), tool_calls: None, tool_call_id: None },
+            Message { role: "user".into(), content: "hello".into(), tool_calls: None, tool_call_id: None },
+        ];
+        let jsonl = serialize_conversation(&msgs);
+        assert!(jsonl.contains("sys prompt"));
+        assert!(jsonl.contains("hello"));
+
+        let restored = deserialize_conversation(&jsonl);
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].role, "system");
+        assert_eq!(restored[1].content, "hello");
+    }
+
+    #[test]
+    fn deserialize_empty_yields_empty() {
+        let result = deserialize_conversation("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn deserialize_bad_lines_are_filtered() {
+        let result = deserialize_conversation("not valid json\n{\"role\":\"user\",\"content\":\"ok\"}");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "ok");
+    }
 }

@@ -213,3 +213,102 @@ fn parse_ddg_results(html: &str) -> Vec<(String, String, String)> {
 
     results
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ddg_empty_html() {
+        let results = parse_ddg_results("");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_ddg_no_results() {
+        let html = "<html><body>no results here</body></html>";
+        let results = parse_ddg_results(html);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_ddg_single_result() {
+        let html = r#"
+result__title
+Example Title
+<a href="https://example.com">click</a>
+result__snippet
+This is a sample snippet
+</div>"#;
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 1, "expected 1 result, got: {:?}", results);
+        assert!(results[0].0.contains("Example Title"));
+        assert!(results[0].1.contains("This is a sample snippet"));
+        assert_eq!(results[0].2, "https://example.com");
+    }
+
+    #[test]
+    fn parse_ddg_multiple_results() {
+        let html = r#"
+result__title
+Title A
+<a href="https://a.com">click</a>
+result__snippet
+Snippet A
+</div>
+result__title
+Title B
+<a href="https://b.com">click</a>
+result__snippet
+Snippet B
+</div>"#;
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 2, "expected 2 results, got: {:?}", results);
+        assert_eq!(results[0].0.trim(), "Title A");
+        assert_eq!(results[1].0.trim(), "Title B");
+    }
+
+    #[test]
+    fn parse_ddg_handles_html_entities() {
+        let html = r#"
+result__title
+Test &amp; More &lt;code&gt;
+<a href="https://x.com">click</a>
+result__snippet
+Result &amp; stuff
+</div>"#;
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 1, "expected 1 result, got: {:?}", results);
+        assert!(results[0].0.contains("Test & More"));
+        assert!(!results[0].0.contains("&amp;"));
+    }
+
+    #[test]
+    fn parse_ddg_strips_bold_tags() {
+        let html = r#"
+result__title
+<b>Bold</b> Text
+<a href="https://b.com">click</a>
+result__snippet
+Some <b>bold</b> snippet
+</div>"#;
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].0.contains("<b>"));
+        assert!(!results[0].1.contains("<b>"));
+    }
+
+    #[test]
+    fn web_fetch_def_check() {
+        let def = web_fetch_def();
+        assert_eq!(def.function.name, "web_fetch");
+        assert!(def.function.parameters["required"][0].as_str().unwrap() == "url");
+    }
+
+    #[test]
+    fn web_search_def_check() {
+        let def = web_search_def();
+        assert_eq!(def.function.name, "web_search");
+        assert!(def.function.parameters["required"][0].as_str().unwrap() == "query");
+    }
+}

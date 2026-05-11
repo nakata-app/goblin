@@ -326,3 +326,162 @@ fn simple_hash(s: &str) -> String {
     s.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn in_memory_db() -> MemoryDb {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // manual init to avoid dirs_path issues
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                ns TEXT NOT NULL,
+                tier INTEGER DEFAULT 1,
+                text TEXT NOT NULL,
+                meta TEXT,
+                created INTEGER NOT NULL,
+                last_accessed INTEGER NOT NULL,
+                access_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS observations (
+                id TEXT PRIMARY KEY,
+                ts INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                args_summary TEXT,
+                result_summary TEXT,
+                success INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS learned (
+                id TEXT PRIMARY KEY,
+                preference TEXT NOT NULL,
+                reinforcement_count INTEGER DEFAULT 1,
+                last_seen INTEGER NOT NULL
+            );"
+        ).unwrap();
+        MemoryDb { conn: Mutex::new(conn) }
+    }
+
+    #[test]
+    fn add_and_search_memory() {
+        let db = in_memory_db();
+        db.add_memory("m1", "proj:test", 1, "remember this fact", None).unwrap();
+
+        let results = db.search_memories(Some("proj:test"), "remember", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "remember this fact");
+        assert_eq!(results[0].ns, "proj:test");
+    }
+
+    #[test]
+    fn search_by_ns_filter() {
+        let db = in_memory_db();
+        db.add_memory("a", "ns:a", 1, "alpha", None).unwrap();
+        db.add_memory("b", "ns:b", 1, "beta", None).unwrap();
+
+        let results = db.search_memories(Some("ns:a"), "alpha", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "alpha");
+    }
+
+    #[test]
+    fn search_no_match() {
+        let db = in_memory_db();
+        db.add_memory("x", "ns:x", 1, "hello", None).unwrap();
+        let results = db.search_memories(Some("ns:x"), "nonexistent", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn get_memories_by_ns() {
+        let db = in_memory_db();
+        db.add_memory("1", "ns:x", 2, "important", None).unwrap();
+        db.add_memory("2", "ns:x", 1, "normal", None).unwrap();
+        db.add_memory("3", "ns:y", 1, "other", None).unwrap();
+
+        let results = db.get_memories_by_ns("ns:x", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        // tier 2 first
+        assert_eq!(results[0].text, "important");
+    }
+
+    #[test]
+    fn remove_memory() {
+        let db = in_memory_db();
+        db.add_memory("r1", "ns:r", 1, "to remove", None).unwrap();
+        assert!(db.remove_memory("r1").unwrap());
+        assert!(!db.remove_memory("r1").unwrap());
+    }
+
+    #[test]
+    fn memory_stats() {
+        let db = in_memory_db();
+        db.add_memory("s1", "ns:a", 1, "a1", None).unwrap();
+        db.add_memory("s2", "ns:a", 1, "a2", None).unwrap();
+        db.add_memory("s3", "ns:b", 1, "b1", None).unwrap();
+
+        let stats = db.memory_stats().unwrap();
+        assert_eq!(stats.total, 3);
+        assert!(stats.by_ns.iter().any(|(ns, _)| ns == "ns:a"));
+    }
+
+    #[test]
+    fn record_observation() {
+        let db = in_memory_db();
+        db.record_observation("obs1", "sess1", "read_file", Some("path: test.txt"), Some("result: ok"), true).unwrap();
+        // No query method, but no error means success
+    }
+
+    #[test]
+    fn reinforce_and_get_learned() {
+        let db = in_memory_db();
+        db.reinforce("avoid npm").unwrap();
+        db.reinforce("avoid npm").unwrap();
+        db.reinforce("use rust").unwrap();
+
+        let learned = db.get_learned(10).unwrap();
+        assert_eq!(learned.len(), 2);
+        assert_eq!(learned[0], "avoid npm"); // more reinforcements first
+    }
+
+    #[test]
+    fn compact_removes_old_tier1() {
+        let db = in_memory_db();
+        db.add_memory("c1", "ns:c", 1, "old", None).unwrap();
+
+        // Set last_accessed to old timestamp directly
+        {
+            let conn = db.conn.lock().unwrap();
+            let old_ts = current_timestamp() - 100 * 86400; // 100 days ago
+            conn.execute("UPDATE memories SET last_accessed = ?1 WHERE id = 'c1'", rusqlite::params![old_ts]).unwrap();
+        }
+
+        let removed = db.compact(30).unwrap();
+        assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn compact_keeps_tier2() {
+        let db = in_memory_db();
+        db.add_memory("c2", "ns:c", 2, "important old", None).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            let old_ts = current_timestamp() - 100 * 86400;
+            conn.execute("UPDATE memories SET last_accessed = ?1 WHERE id = 'c2'", rusqlite::params![old_ts]).unwrap();
+        }
+
+        let removed = db.compact(30).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn add_memory_duplicate_id_fails() {
+        let db = in_memory_db();
+        db.add_memory("dup", "ns:d", 1, "first", None).unwrap();
+        let result = db.add_memory("dup", "ns:d", 1, "second", None);
+        assert!(result.is_err());
+    }
+}

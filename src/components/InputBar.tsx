@@ -49,12 +49,12 @@ export function InputBar({ input, onInputChange, onSend, disabled }: InputBarPro
             onKeyDown={handleKeyDown}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            placeholder="Bir sey sor veya gorev ver... (Enter: gonder, Shift+Enter: yeni satir)"
+            placeholder="Ask something or give a task... (Enter: send, Shift+Enter: new line)"
             rows={1}
             disabled={disabled}
           />
           <div className="input-hint">
-            <kbd>Enter</kbd> gonder &middot; <kbd>Shift</kbd>+<kbd>Enter</kbd> satir &middot; <kbd>Esc</kbd> iptal
+            <kbd>Enter</kbd> send &middot; <kbd>Shift</kbd>+<kbd>Enter</kbd> line &middot; <kbd>Esc</kbd> cancel
           </div>
         </div>
         <button
