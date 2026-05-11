@@ -6,9 +6,9 @@
 - [x] Goblin character strip (state-based emoji, placeholder)
 - [x] Chat input + mesaj baloncukları
 - [x] Status bar (model, turn, cost)
-- [ ] Zustand store'ları (chatStore, agentStore)
-- [ ] Tauri IPC: frontend <-> Rust backend baglantisi
-- [ ] E2E test altyapisi (vitest + playwright)
+- [x] Zustand store'ları (chatStore, agentStore, sessionStore)
+- [x] Tauri IPC: frontend <-> Rust backend baglantisi
+- [x] E2E test altyapisi (vitest + playwright)
 
 ## Faz 2: Agent Motoru
 - [x] Rust: provider trait + OpenAI-compatible implementasyon
@@ -16,8 +16,8 @@
 - [x] Rust: system prompt builder
 - [x] Rust: context window management (token estimation + trim)
 - [x] Rust: tool dispatch framework (tool registry stub)
-- [ ] Frontend: useAgent hook (Tauri IPC ile agent loop)
-- [ ] E2E: agent loop tam tur testi (prompt -> LLM -> tool -> sonuc)
+- [x] Frontend: useAgent hook (Tauri IPC ile agent loop)
+- [x] E2E: agent loop tam tur testi (prompt -> LLM -> tool -> sonuc) [22 tests, vitest mock]
 
 ## Faz 3: Memory + Mnemonics (Native)
 - [ ] Rust: SQLite schema (memories, observations, learned, sessions, jobs)
