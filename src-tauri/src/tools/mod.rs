@@ -2,6 +2,7 @@ pub mod file_ops;
 pub mod search;
 pub mod shell;
 pub mod web;
+pub mod browser;
 
 use crate::provider::ToolDefinition;
 use std::collections::HashMap;
@@ -66,6 +67,14 @@ pub fn create_tool_registry() -> ToolRegistry {
     registry.register(shell::bash_def(), shell::handle_bash);
     registry.register(web::web_fetch_def(), web::handle_web_fetch);
     registry.register(web::web_search_def(), web::handle_web_search);
+    registry.register(browser::browser_navigate_def(), browser::handle_browser_navigate);
+    registry.register(browser::browser_click_def(), browser::handle_browser_click);
+    registry.register(browser::browser_type_def(), browser::handle_browser_type);
+    registry.register(browser::browser_scroll_def(), browser::handle_browser_scroll);
+    registry.register(browser::browser_snapshot_def(), browser::handle_browser_snapshot);
+    registry.register(browser::browser_press_def(), browser::handle_browser_press);
+    registry.register(browser::browser_vision_def(), browser::handle_browser_vision);
+    registry.register(browser::browser_console_def(), browser::handle_browser_console);
 
     registry
 }

@@ -64,13 +64,13 @@
 - [x] Frontend: sidebar'da session listesi
 - [x] E2E: session olustur -> kapat -> resume -> mesajlar ayni
 
-## Faz 7: Web + Browser Tool'lari 🔧
+## Faz 7: Web + Browser Tool'lari ✅
 - [x] Rust: web_search (DuckDuckGo scraping)
 - [x] Rust: web_fetch (URL icerik cekme, JSON detect, 15K truncate)
-- [ ] Rust: browser_navigate, click, type, scroll, snapshot, press
-- [ ] Rust: browser_vision (screenshot + LLM analiz)
-- [ ] Rust: browser_console (JS calistir/okuma)
-- [ ] E2E: browser ac -> tikla -> sonuc dogrula
+- [x] Rust: browser_navigate, click, type, scroll, snapshot, press
+- [x] Rust: browser_vision (screenshot PNG, base64 output)
+- [x] Rust: browser_console (JS evaluate, await promise, 10K truncate)
+- [ ] E2E: browser ac -> tikla -> sonuc dogrula (Chrome binary gerektirir)
 
 ## Faz 8: Cron Sistemi ✅
 - [x] Rust: job scheduler (schedule parse - 5-field cron, */step, range, list)
