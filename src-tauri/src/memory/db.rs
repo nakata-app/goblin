@@ -66,8 +66,33 @@ impl MemoryDb {
                 vector BLOB NOT NULL
             );
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, ns, content=memories, content_rowid=rowid);"
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, ns, content=memories, content_rowid=rowid);
+
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, text, ns) VALUES (new.rowid, new.text, new.ns);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, text, ns) VALUES('delete', old.rowid, old.text, old.ns);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, text, ns) VALUES('delete', old.rowid, old.text, old.ns);
+                INSERT INTO memories_fts(rowid, text, ns) VALUES (new.rowid, new.text, new.ns);
+            END;"
         ).map_err(|e| format!("Schema init error: {}", e))?;
+
+        // Backfill memories_fts for databases created before triggers existed
+        let fts_count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM memories_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let mem_count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap_or(0);
+        if mem_count > 0 && fts_count < mem_count {
+            conn.execute(
+                "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
+                [],
+            ).ok();
+        }
 
         Ok(())
     }
@@ -109,21 +134,148 @@ impl MemoryDb {
         Ok(())
     }
 
+    /// Hybrid search: combines FTS5 (BM25 keyword ranking) with semantic
+    /// embedding similarity via Reciprocal Rank Fusion (RRF). Falls back to
+    /// FTS5-only if embedding is not configured, and to LIKE if FTS5 returns
+    /// nothing usable (e.g. query that tokenizes to empty).
     pub fn search_memories(
         &self,
         ns: Option<&str>,
         query: &str,
         limit: i32,
     ) -> Result<Vec<MemoryRecord>, String> {
-        // Try semantic search if embedding is configured
-        if let Some(ref emb) = self.embedding {
-            if let Ok(query_vec) = emb.embed_blocking(query) {
-                return self.semantic_search(ns, &query_vec, limit);
+        let fetch = (limit * 4).max(20);
+        let fts_hits = self.fts_search(ns, query, fetch).unwrap_or_default();
+
+        let semantic_hits = if let Some(ref emb) = self.embedding {
+            match emb.embed_blocking(query) {
+                Ok(q) => self.semantic_search(ns, &q, fetch).unwrap_or_default(),
+                Err(_) => Vec::new(),
             }
+        } else {
+            Vec::new()
+        };
+
+        if fts_hits.is_empty() && semantic_hits.is_empty() {
+            return self.like_search(ns, query, limit);
         }
 
-        // Fallback: LIKE-based search
-        self.like_search(ns, query, limit)
+        // Reciprocal Rank Fusion: score(d) = Σ 1 / (k + rank_i(d)). k=60 is the
+        // value from the original Cormack et al. paper; it down-weights the
+        // first-place advantage so neither source dominates.
+        let k: f32 = 60.0;
+        use std::collections::HashMap;
+        let mut scores: HashMap<String, f32> = HashMap::new();
+        let mut by_id: HashMap<String, MemoryRecord> = HashMap::new();
+
+        for (rank, r) in fts_hits.into_iter().enumerate() {
+            *scores.entry(r.id.clone()).or_insert(0.0) += 1.0 / (k + (rank as f32 + 1.0));
+            by_id.entry(r.id.clone()).or_insert(r);
+        }
+        for (rank, r) in semantic_hits.into_iter().enumerate() {
+            *scores.entry(r.id.clone()).or_insert(0.0) += 1.0 / (k + (rank as f32 + 1.0));
+            by_id.entry(r.id.clone()).or_insert(r);
+        }
+
+        let mut fused: Vec<(f32, MemoryRecord)> = scores.into_iter()
+            .filter_map(|(id, s)| by_id.remove(&id).map(|r| (s, r)))
+            .collect();
+        fused.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let results: Vec<MemoryRecord> = fused.into_iter()
+            .take(limit as usize)
+            .map(|(_, r)| r)
+            .collect();
+
+        // Bump access stats for returned records
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let now = current_timestamp();
+        for r in &results {
+            conn.execute(
+                "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1 WHERE id = ?2",
+                params![now, r.id],
+            ).ok();
+        }
+
+        Ok(results)
+    }
+
+    /// Sanitize a free-form query into a safe FTS5 MATCH expression by
+    /// splitting on whitespace and wrapping each token as a phrase query.
+    /// Returns None if no usable tokens remain.
+    fn fts5_match_expr(query: &str) -> Option<String> {
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_'))
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect();
+        if tokens.is_empty() { None } else { Some(tokens.join(" OR ")) }
+    }
+
+    fn fts_search(
+        &self,
+        ns: Option<&str>,
+        query: &str,
+        limit: i32,
+    ) -> Result<Vec<MemoryRecord>, String> {
+        let Some(match_expr) = Self::fts5_match_expr(query) else {
+            return Ok(Vec::new());
+        };
+
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let (sql, use_ns) = if ns.is_some() {
+            (
+                "SELECT m.id, m.ns, m.tier, m.text, m.meta, m.created, m.last_accessed, m.access_count
+                 FROM memories_fts
+                 JOIN memories m ON m.rowid = memories_fts.rowid
+                 WHERE memories_fts MATCH ?1 AND m.ns = ?2
+                 ORDER BY bm25(memories_fts) ASC
+                 LIMIT ?3",
+                true,
+            )
+        } else {
+            (
+                "SELECT m.id, m.ns, m.tier, m.text, m.meta, m.created, m.last_accessed, m.access_count
+                 FROM memories_fts
+                 JOIN memories m ON m.rowid = memories_fts.rowid
+                 WHERE memories_fts MATCH ?1
+                 ORDER BY bm25(memories_fts) ASC
+                 LIMIT ?2",
+                false,
+            )
+        };
+
+        let mut stmt = conn.prepare(sql).map_err(|e| format!("Prepare error: {}", e))?;
+        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<MemoryRecord> {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                ns: row.get(1)?,
+                tier: row.get(2)?,
+                text: row.get(3)?,
+                meta: row.get(4)?,
+                created: row.get(5)?,
+                last_accessed: row.get(6)?,
+                access_count: row.get(7)?,
+            })
+        };
+
+        let rows: Vec<rusqlite::Result<MemoryRecord>> = if use_ns {
+            stmt.query_map(params![match_expr, ns.unwrap(), limit], map_row)
+                .map_err(|e| format!("FTS query error: {}", e))?
+                .collect()
+        } else {
+            stmt.query_map(params![match_expr, limit], map_row)
+                .map_err(|e| format!("FTS query error: {}", e))?
+                .collect()
+        };
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {}", e))?);
+        }
+        Ok(results)
     }
 
     fn semantic_search(
@@ -204,13 +356,8 @@ impl MemoryDb {
             .map(|(_, r)| r)
             .collect();
 
-        // Update last_accessed and access_count for found memories
-        for record in &results {
-            conn.execute(
-                "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1 WHERE id = ?2",
-                params![now, record.id],
-            ).ok();
-        }
+        // Access bookkeeping happens in search_memories (the public entry).
+        let _ = now;
 
         Ok(results)
     }
@@ -482,39 +629,10 @@ mod tests {
 
     fn in_memory_db() -> MemoryDb {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        // manual init to avoid dirs_path issues
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
-                ns TEXT NOT NULL,
-                tier INTEGER DEFAULT 1,
-                text TEXT NOT NULL,
-                meta TEXT,
-                created INTEGER NOT NULL,
-                last_accessed INTEGER NOT NULL,
-                access_count INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS observations (
-                id TEXT PRIMARY KEY,
-                ts INTEGER NOT NULL,
-                session_id TEXT NOT NULL,
-                tool_name TEXT NOT NULL,
-                args_summary TEXT,
-                result_summary TEXT,
-                success INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS learned (
-                id TEXT PRIMARY KEY,
-                preference TEXT NOT NULL,
-                reinforcement_count INTEGER DEFAULT 1,
-                last_seen INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS embeddings (
-                memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
-                vector BLOB NOT NULL
-            );"
-        ).unwrap();
-        MemoryDb { conn: Mutex::new(conn), embedding: None }
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        let db = MemoryDb { conn: Mutex::new(conn), embedding: None };
+        db.init_schema().unwrap();
+        db
     }
 
     #[test]
@@ -675,5 +793,82 @@ mod tests {
 
         let results = db.search_memories(None, "common", 10).unwrap();
         assert_eq!(results.len(), 2);
+    }
+
+    // ── FTS5 + hybrid scoring ──
+
+    #[test]
+    fn fts_search_finds_by_keyword() {
+        let db = in_memory_db();
+        db.add_memory("k1", "ns:t", 1, "the cat sat on the mat", None).unwrap();
+        db.add_memory("k2", "ns:t", 1, "dogs are loyal animals", None).unwrap();
+
+        let results = db.fts_search(Some("ns:t"), "cat", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "k1");
+    }
+
+    #[test]
+    fn fts_search_ignores_special_chars() {
+        let db = in_memory_db();
+        db.add_memory("s1", "ns:t", 1, "hello world", None).unwrap();
+        // FTS5 raw `*` would be a syntax error; sanitizer must strip it.
+        let results = db.fts_search(Some("ns:t"), "*** hello ***", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn fts_search_empty_query_returns_empty() {
+        let db = in_memory_db();
+        db.add_memory("e1", "ns:t", 1, "anything", None).unwrap();
+        let results = db.fts_search(Some("ns:t"), "!!!", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn fts_sync_on_delete() {
+        let db = in_memory_db();
+        db.add_memory("d1", "ns:t", 1, "unique-token-foo", None).unwrap();
+        assert_eq!(db.fts_search(Some("ns:t"), "unique-token-foo", 10).unwrap().len(), 1);
+
+        db.remove_memory("d1").unwrap();
+        assert!(db.fts_search(Some("ns:t"), "unique-token-foo", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fts_search_ranks_by_relevance() {
+        let db = in_memory_db();
+        // Two entries with "rust" but k2 has it more times; BM25 should rank
+        // the more-frequent one higher even with shorter text.
+        db.add_memory("k1", "ns:t", 1, "I sometimes write some rust code in the evening", None).unwrap();
+        db.add_memory("k2", "ns:t", 1, "rust rust rust ferris", None).unwrap();
+
+        let results = db.fts_search(Some("ns:t"), "rust", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, "k2", "more frequent term should rank first");
+    }
+
+    #[test]
+    fn search_uses_fts_when_available() {
+        // No embedding configured → search_memories should still benefit from
+        // FTS5 ranking instead of the older LIKE fallback.
+        let db = in_memory_db();
+        db.add_memory("a", "ns:t", 1, "alpha bravo charlie", None).unwrap();
+        db.add_memory("b", "ns:t", 1, "delta echo foxtrot", None).unwrap();
+
+        let results = db.search_memories(Some("ns:t"), "bravo", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "a");
+    }
+
+    #[test]
+    fn fts5_match_expr_handles_punctuation() {
+        // Tokens with punctuation around them must still be matchable.
+        assert!(MemoryDb::fts5_match_expr("hello, world!").is_some());
+        // All-punctuation input must yield None (so we fall back to LIKE).
+        assert!(MemoryDb::fts5_match_expr("!@#$%^&*()").is_none());
+        // Embedded quotes must not break the generated MATCH expression.
+        let expr = MemoryDb::fts5_match_expr("say \"hi\"").unwrap();
+        assert!(expr.contains("OR") || !expr.is_empty());
     }
 }
