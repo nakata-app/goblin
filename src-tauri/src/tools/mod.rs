@@ -71,7 +71,13 @@ impl ToolRegistry {
     }
 }
 
-pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStore, whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>) -> ToolRegistry {
+pub fn create_tool_registry(
+    stt: SttConfig,
+    tts: TtsConfig,
+    task_store: TaskStore,
+    whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>,
+    mnemonics: Option<std::sync::Arc<crate::mnemonics::MnemonicsClient>>,
+) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     let stt_api_key = stt.api_key.clone();
@@ -260,6 +266,80 @@ pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStor
                 })
             },
         );
+    }
+
+    // Cross-project semantic memory via Atakan's `mnemonics` binary.
+    // Only exposed when the binary actually responded to --help, so the
+    // agent doesn't get phantom tools that always error.
+    if let Some(client) = mnemonics {
+        {
+            let mn = client.clone();
+            registry.register(
+                crate::provider::ToolDefinition {
+                    def_type: "function".to_string(),
+                    function: crate::provider::FunctionDef {
+                        name: "mnemonics_retrieve".to_string(),
+                        description: "Search Atakan's cross-project semantic memory. Use this when the answer might live in a previous session or other project, not just this codebase. Returns top-k hits ordered by tier-aware decay score.".to_string(),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "query": { "type": "string", "description": "Free-text query." },
+                                "ns": { "type": "string", "description": "Optional namespace filter (e.g. 'proj:goblin', 'feedback', 'global')." },
+                                "top_k": { "type": "integer", "description": "Max hits to return (default 5).", "default": 5 },
+                                "decay": { "type": "boolean", "description": "Apply tier-aware decay scoring (default true).", "default": true }
+                            },
+                            "required": ["query"]
+                        }),
+                    },
+                },
+                move |args| {
+                    let mn = mn.clone();
+                    Box::pin(async move {
+                        let query = args["query"].as_str().ok_or("Missing 'query' parameter")?.to_string();
+                        let ns = args["ns"].as_str().map(|s| s.to_string());
+                        let top_k = args["top_k"].as_u64().unwrap_or(5) as u32;
+                        let decay = args["decay"].as_bool().unwrap_or(true);
+                        tokio::task::spawn_blocking(move || {
+                            mn.retrieve(&query, ns.as_deref(), top_k, decay)
+                        })
+                        .await
+                        .map_err(|e| format!("Mnemonics task panicked: {}", e))?
+                    })
+                },
+            );
+        }
+        {
+            let mn = client.clone();
+            registry.register(
+                crate::provider::ToolDefinition {
+                    def_type: "function".to_string(),
+                    function: crate::provider::FunctionDef {
+                        name: "mnemonics_ingest".to_string(),
+                        description: "Append a memory to Atakan's cross-project store. Use sparingly: only for decisions, non-obvious bug root causes, or facts the user explicitly asked to remember. Avoid routine session noise.".to_string(),
+                        parameters: serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string", "description": "The memory text. Prefix with '[YYYY-MM-DD] [project]' when context matters." },
+                                "ns": { "type": "string", "description": "Optional namespace (defaults to 'proj:goblin')." }
+                            },
+                            "required": ["text"]
+                        }),
+                    },
+                },
+                move |args| {
+                    let mn = mn.clone();
+                    Box::pin(async move {
+                        let text = args["text"].as_str().ok_or("Missing 'text' parameter")?.to_string();
+                        let ns = args["ns"].as_str().map(|s| s.to_string());
+                        tokio::task::spawn_blocking(move || {
+                            mn.ingest(&text, ns.as_deref())
+                        })
+                        .await
+                        .map_err(|e| format!("Mnemonics task panicked: {}", e))?
+                    })
+                },
+            );
+        }
     }
 
     registry

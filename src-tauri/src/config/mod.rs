@@ -14,7 +14,39 @@ pub struct Config {
     pub stt: SttConfig,
     #[serde(default)]
     pub tts: TtsConfig,
+    #[serde(default)]
+    pub mnemonics: MnemonicsConfig,
 }
+
+/// External `mnemonics` binary (cross-project semantic memory). When the
+/// binary is reachable this gives the agent two extra tools
+/// (`mnemonics_retrieve`, `mnemonics_ingest`) that complement Goblin's own
+/// project-scoped memory at .goblin/memory.db.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MnemonicsConfig {
+    #[serde(default = "default_mnemonics_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_mnemonics_binary")]
+    pub binary: String,
+    /// Namespace to use for ingests originating from this Goblin install.
+    /// Reads are unfiltered by default so the agent can recall anything.
+    #[serde(default = "default_mnemonics_ns")]
+    pub default_ns: String,
+}
+
+impl Default for MnemonicsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_mnemonics_enabled(),
+            binary: default_mnemonics_binary(),
+            default_ns: default_mnemonics_ns(),
+        }
+    }
+}
+
+fn default_mnemonics_enabled() -> bool { true }
+fn default_mnemonics_binary() -> String { "mnemonics".to_string() }
+fn default_mnemonics_ns() -> String { "proj:goblin".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersConfig {
@@ -427,6 +459,7 @@ impl Config {
             memory: MemoryConfig::default(),
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
+            mnemonics: MnemonicsConfig::default(),
         })
     }
 
@@ -584,6 +617,7 @@ mod tests {
             memory: MemoryConfig::default(),
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
+            mnemonics: MnemonicsConfig::default(),
         }
     }
 
@@ -600,6 +634,7 @@ mod tests {
             memory: MemoryConfig::default(),
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
+            mnemonics: MnemonicsConfig::default(),
         }
     }
 

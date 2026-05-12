@@ -8,6 +8,7 @@ mod session;
 mod task;
 mod tools;
 mod whatsapp;
+mod mnemonics;
 
 use agent::r#loop::AgentLoop;
 use crate::config::Config;
@@ -23,6 +24,7 @@ use task::TaskStore;
 use tools::ToolRegistry;
 use tools::mcp_server::McpServerHandle;
 use whatsapp::WhatsappBridge;
+use mnemonics::MnemonicsClient;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
 use std::sync::Arc;
@@ -40,6 +42,7 @@ struct AppState {
     cron_store: CronStore,
     task_store: TaskStore,
     whatsapp: Arc<WhatsappBridge>,
+    mnemonics: Option<Arc<MnemonicsClient>>,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -578,6 +581,7 @@ async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> 
             state.config.tts.clone(),
             state.task_store.clone(),
             state.whatsapp.clone(),
+            state.mnemonics.clone(),
         );
         reg.definitions().iter().map(|d| {
             (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
@@ -632,6 +636,7 @@ async fn save_config(
         new_config.tts.clone(),
         state.task_store.clone(),
         state.whatsapp.clone(),
+        state.mnemonics.clone(),
     ));
 
     // Update agent in state
@@ -813,6 +818,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
                 state.config.tts.clone(),
                 state.task_store.clone(),
                 state.whatsapp.clone(),
+                state.mnemonics.clone(),
             );
 
             if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
@@ -925,6 +931,7 @@ pub fn run() {
             memory: crate::config::MemoryConfig::default(),
             stt: crate::config::SttConfig::default(),
             tts: crate::config::TtsConfig::default(),
+            mnemonics: crate::config::MnemonicsConfig::default(),
         }
     });
 
@@ -1002,7 +1009,32 @@ pub fn run() {
     };
 
     let whatsapp_bridge = Arc::new(WhatsappBridge::new());
-    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone(), task_store.clone(), whatsapp_bridge.clone());
+
+    // mnemonics binary may or may not be installed; probe once at boot so we
+    // can decide whether to expose the tools.
+    let mnemonics_client: Option<Arc<MnemonicsClient>> = if config.mnemonics.enabled {
+        let client = MnemonicsClient::new(
+            config.mnemonics.binary.clone(),
+            config.mnemonics.default_ns.clone(),
+        );
+        if client.is_available() {
+            println!("[mnemonics] Enabled via '{}' (ns='{}').", config.mnemonics.binary, config.mnemonics.default_ns);
+            Some(Arc::new(client))
+        } else {
+            eprintln!("[mnemonics] Configured but '{}' is not runnable; skipping.", config.mnemonics.binary);
+            None
+        }
+    } else {
+        None
+    };
+
+    let tool_registry = tools::create_tool_registry(
+        config.stt.clone(),
+        config.tts.clone(),
+        task_store.clone(),
+        whatsapp_bridge.clone(),
+        mnemonics_client.clone(),
+    );
     let agent = init_agent(&config, tool_registry);
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1039,6 +1071,7 @@ pub fn run() {
             cron_store,
             task_store,
             whatsapp: whatsapp_bridge,
+            mnemonics: mnemonics_client,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -1287,10 +1320,11 @@ mod tests {
             memory: crate::config::MemoryConfig::default(),
             stt: crate::config::SttConfig::default(),
             tts: crate::config::TtsConfig::default(),
+            mnemonics: crate::config::MnemonicsConfig::default(),
         };
 
         let tool_registry = tools::create_tool_registry(
-            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()),
+            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None,
         );
 
         let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
@@ -1372,10 +1406,11 @@ mod tests {
                 memory: crate::config::MemoryConfig::default(),
                 stt: crate::config::SttConfig::default(),
                 tts: crate::config::TtsConfig::default(),
+                mnemonics: crate::config::MnemonicsConfig::default(),
             };
 
             let tool_registry = tools::create_tool_registry(
-                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()),
+                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None,
             );
 
             let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
