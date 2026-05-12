@@ -111,12 +111,6 @@ export const ChatPanel = memo(function ChatPanel({ messages }: ChatPanelProps) {
         <div key={msg.id} className={`message message-${msg.role}${msg.queued ? ' message-queued' : ''}`}>
           <div className="message-content">
             <div className="chat-markdown" dangerouslySetInnerHTML={{ __html: renderChat(msg.content) }} />
-            {msg.queued && (
-              <div className="message-queued-badge">
-                <span className="queued-dot" />
-                <span>in queue</span>
-              </div>
-            )}
             {msg.toolCalls && msg.toolCalls.length > 0 && (
               <div className="message-tools">
                 {msg.toolCalls.map((tc) => (
