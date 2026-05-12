@@ -135,6 +135,7 @@ async fn send_message(
         "tokens_out": response.tokens_out,
         "model": response.model,
         "reasoning": response.reasoning,
+        "decisions": response.decisions,
     }))
 }
 

@@ -19,6 +19,13 @@ interface AgentResponse {
   tokens_out: number;
   model: string;
   reasoning?: string | null;
+  decisions?: DecisionEntry[] | null;
+}
+
+interface DecisionEntry {
+  round: number;
+  reasoning: string;
+  tools_chosen: string[];
 }
 
 interface ProgressPayload {
@@ -31,6 +38,9 @@ interface ProgressPayload {
   summary?: string;
   model?: string;
   error?: string;
+  reasoning?: string;
+  tools?: string[];
+  has_tool_calls?: boolean;
 }
 
 const TOOL_EVENT_MAP: Record<string, string> = {
@@ -90,6 +100,9 @@ export function useAgent() {
   const clearThinking = useChatStore((s) => s.clearThinking);
   const upsertTask = useChatStore((s) => s.upsertTask);
   const clearTasks = useChatStore((s) => s.clearTasks);
+  const addDecision = useChatStore((s) => s.addDecision);
+  const clearDecisions = useChatStore((s) => s.clearDecisions);
+  const setActiveTab = useChatStore((s) => s.setActiveTab);
   const setModel = useAgentStore((s) => s.setModel);
   const setGoblinState = useAgentStore((s) => s.setGoblinState);
   const model = useAgentStore((s) => s.model);
@@ -123,6 +136,7 @@ export function useAgent() {
       incrementTurn();
       clearThinking();
       clearTasks();
+      clearDecisions();
 
       // Force React to flush state updates synchronously before the async invoke.
       // Double rAF ensures: 1) React schedules render, 2) React commits render to DOM.
@@ -151,6 +165,14 @@ export function useAgent() {
           case 'error':
             setGoblinState('error');
             setError(p.error as string);
+            break;
+          case 'decision':
+            setActiveTab('behavior');
+            addDecision({
+              round: (p.round ?? 0),
+              reasoning: (p.reasoning ?? ''),
+              tools_chosen: (p.tools ?? []),
+            });
             break;
         }
       });
@@ -202,6 +224,13 @@ export function useAgent() {
           setThinking(response.reasoning);
         }
 
+        if (response.decisions && response.decisions.length > 0) {
+          useChatStore.getState().clearDecisions();
+          for (const d of response.decisions) {
+            useChatStore.getState().addDecision(d);
+          }
+        }
+
         if (response.tool_calls && response.tool_calls.length > 0) {
           setRightPanel(
             response.tool_calls
@@ -248,6 +277,7 @@ export function useAgent() {
     [
       addMessage,
       markMessageSent,
+      setActiveTab,
       setRightPanel,
       addCost,
       incrementTurn,
@@ -257,6 +287,8 @@ export function useAgent() {
       setError,
       emitEvent,
       applyLLMOutput,
+      clearDecisions,
+      addDecision,
       model,
     ]
   );

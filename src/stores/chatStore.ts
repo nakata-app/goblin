@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Message } from '../types';
 
-export type RightTab = 'dashboard' | 'thinking' | 'tasks' | 'output' | 'help';
+export type RightTab = 'dashboard' | 'thinking' | 'tasks' | 'output' | 'behavior' | 'help';
 
 export interface TaskEntry {
   id: string;
@@ -9,6 +9,13 @@ export interface TaskEntry {
   status: 'pending' | 'running' | 'done' | 'error';
   result?: string;
 }
+
+export interface DecisionEntry {
+  round: number;
+  reasoning: string;
+  tools_chosen: string[];
+}
+
 interface ChatState {
   messages: Message[];
   input: string;
@@ -18,6 +25,7 @@ interface ChatState {
   thinkingContent: string;
   tasks: TaskEntry[];
   diffContent: string;
+  decisions: DecisionEntry[];
 
   setInput: (input: string) => void;
   addMessage: (msg: Message) => void;
@@ -35,6 +43,8 @@ interface ChatState {
   upsertTask: (task: TaskEntry) => void;
   clearTasks: () => void;
   setDiff: (content: string) => void;
+  addDecision: (d: DecisionEntry) => void;
+  clearDecisions: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -46,6 +56,7 @@ export const useChatStore = create<ChatState>((set) => ({
   thinkingContent: '',
   tasks: [],
   diffContent: '',
+  decisions: [],
 
   setInput: (input) => set({ input }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
@@ -83,4 +94,6 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
   clearTasks: () => set({ tasks: [] }),
   setDiff: (content) => set({ diffContent: content }),
+  addDecision: (d) => set((s) => ({ decisions: [...s.decisions, d] })),
+  clearDecisions: () => set({ decisions: [] }),
 }));

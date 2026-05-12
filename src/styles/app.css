@@ -2289,6 +2289,109 @@ body.resizing * {
   border-color: rgba(16,185,129,0.35);
 }
 
+/* ── Behavior Tab (Decision Timeline) ── */
+.behavior-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.decision-card {
+  background: var(--bg-tertiary);
+  border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 10px;
+  padding: 12px 14px;
+  animation: fadeIn 0.3s ease;
+}
+
+.decision-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.decision-round {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.decision-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.decision-tools {
+  background: rgba(16,185,129,0.12);
+  color: var(--accent);
+}
+
+.decision-response {
+  background: rgba(99,102,241,0.12);
+  color: #818cf8;
+}
+
+.decision-tools-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.decision-tool-tag {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.decision-no-tools {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.decision-reasoning {
+  margin-top: 4px;
+}
+
+.decision-reasoning-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.decision-reasoning-toggle:hover {
+  color: var(--text-dim);
+}
+
+.decision-reasoning-text {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 6px;
+  border-left: 2px solid var(--accent);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }

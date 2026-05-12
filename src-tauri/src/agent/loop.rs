@@ -146,6 +146,7 @@ impl AgentLoop {
         let mut all_tool_calls: Vec<crate::provider::ToolCall> = Vec::new();
         let mut observations: Vec<ToolObservation> = Vec::new();
         let mut all_reasoning: Vec<String> = Vec::new();
+        let mut all_decisions: Vec<Decision> = Vec::new();
         let mut loop_guard = LoopGuard::new();
         let mut guard_triggered = false;
 
@@ -173,6 +174,28 @@ impl AgentLoop {
             }
 
             let has_tool_calls = resp.tool_calls.as_ref().map(|tc| !tc.is_empty()).unwrap_or(false);
+
+            // Track decision: what model thought + what tools it picked
+            {
+                let tool_names: Vec<String> = resp.tool_calls.as_ref()
+                    .map(|tcs| tcs.iter().map(|tc| tc.function.name.clone()).collect())
+                    .unwrap_or_default();
+                let decision = Decision {
+                    round: round + 1,
+                    reasoning: resp.reasoning.clone().unwrap_or_default(),
+                    tools_chosen: tool_names.clone(),
+                };
+                if let Some(ref tx) = progress {
+                    let _ = tx.send(serde_json::json!({
+                        "type": "decision",
+                        "round": round + 1,
+                        "reasoning": truncate_str(&decision.reasoning, 500),
+                        "tools": tool_names,
+                        "has_tool_calls": has_tool_calls,
+                    }));
+                }
+                all_decisions.push(decision);
+            }
 
             if !has_tool_calls {
                 final_content = resp.content.unwrap_or_default();
@@ -331,6 +354,7 @@ impl AgentLoop {
             model: model.to_string(),
             observations,
             reasoning: if all_reasoning.is_empty() { None } else { Some(all_reasoning.join("\n\n")) },
+            decisions: all_decisions,
         })
     }
 
@@ -341,6 +365,13 @@ impl AgentLoop {
     pub fn set_conversation(&mut self, messages: Vec<crate::provider::Message>) {
         self.conversation = messages;
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Decision {
+    pub round: u32,
+    pub reasoning: String,
+    pub tools_chosen: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -360,6 +391,7 @@ pub struct AgentResponse {
     pub model: String,
     pub observations: Vec<ToolObservation>,
     pub reasoning: Option<String>,
+    pub decisions: Vec<Decision>,
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
