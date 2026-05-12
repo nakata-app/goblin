@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct GeminiProvider {
     pub api_key: String,
     pub base_url: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Serialize)]
@@ -227,7 +228,7 @@ impl Provider for GeminiProvider {
             system_instruction,
             generation_config: GeminiGenerationConfig {
                 temperature: 0.0,
-                max_output_tokens: 8192,
+                max_output_tokens: self.max_tokens,
             },
         };
 

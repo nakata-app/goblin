@@ -782,7 +782,12 @@ kbd {
 .panel-resize-handle::after {
   content: '';
   position: absolute;
-  inset: 0 -6px;
+  inset: 0 -7px;
+}
+
+/* Second resize handle (between center and right panel): only extend left */
+.panel-resize-handle-right::after {
+  inset: 0 0 0 -7px;
 }
 
 body.resizing {
@@ -2600,3 +2605,105 @@ input[type="checkbox"] {
 .config-saved-err {
   color: var(--error);
 }
+
+/* ═══════════════════════════════════
+   WHATSAPP PANEL
+   ═══════════════════════════════════ */
+
+.wa-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4); z-index: 180; opacity: 1; pointer-events: auto;
+}
+.wa-panel {
+  position: fixed; top: 0; right: 0;
+  width: 380px; max-width: 90vw; height: 100vh;
+  background: var(--bg-secondary); border-left: 1px solid var(--border);
+  z-index: 181; display: flex; flex-direction: column;
+}
+.wa-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.wa-title {
+  font-size: 13px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.wa-header-actions { display: flex; align-items: center; gap: 8px; }
+.wa-status-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  font-family: var(--font-mono); color: var(--text-dim); background: rgba(255,255,255,0.05);
+}
+.wa-status-ok { color: var(--accent); background: rgba(16,185,129,0.12); }
+.wa-status-warn { color: #f59e0b; background: rgba(245,158,11,0.12); }
+.wa-status-err { color: var(--error); background: rgba(239,68,68,0.12); }
+.wa-close {
+  background: none; border: none; color: var(--text-dim); font-size: 16px;
+  cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
+}
+.wa-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+
+.wa-body { flex: 1; overflow-y: auto; min-height: 0; }
+.wa-qr-section {
+  display: flex; flex-direction: column; align-items: center; padding: 30px 20px; gap: 12px;
+}
+.wa-qr-label { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.wa-qr-image { width: 260px; height: 260px; border-radius: 12px; border: 2px solid var(--border); }
+.wa-qr-hint { font-size: 11px; color: var(--text-dim); text-align: center; }
+.wa-user-bar {
+  display: flex; align-items: center; gap: 8px; padding: 10px 18px;
+  border-bottom: 1px solid var(--border); background: rgba(16,185,129,0.05);
+  font-size: 12px; color: var(--accent);
+}
+.wa-user-icon { font-size: 16px; }
+.wa-error {
+  margin: 10px 18px; padding: 8px 12px; border-radius: var(--radius-sm);
+  background: rgba(239,68,68,0.1); color: var(--error); font-size: 11px;
+  font-family: var(--font-mono);
+}
+.wa-messages { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.wa-msg {
+  background: var(--bg-tertiary); border-radius: 10px; padding: 10px 14px;
+  border: 1px solid var(--border); max-width: 85%;
+}
+.wa-msg-me { align-self: flex-end; background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.15); }
+.wa-msg-from { font-size: 10px; font-weight: 600; color: var(--accent); margin-bottom: 3px; }
+.wa-msg-text { font-size: 13px; color: var(--text-primary); line-height: 1.45; word-break: break-word; }
+.wa-msg-time { font-size: 9px; color: var(--text-dim); margin-top: 4px; text-align: right; }
+.wa-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 40px 20px; gap: 8px; color: var(--text-dim);
+}
+.wa-empty-icon { font-size: 36px; opacity: 0.5; }
+.wa-empty-hint { font-size: 11px; opacity: 0.5; }
+.wa-send-bar {
+  display: flex; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border);
+  flex-shrink: 0; background: var(--bg-primary);
+}
+.wa-send-to {
+  width: 120px; flex-shrink: 0;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  color: var(--text-primary); font-size: 11px; padding: 6px 10px;
+  border-radius: var(--radius-sm); font-family: var(--font-mono); outline: none;
+}
+.wa-send-to:focus { border-color: var(--accent); }
+.wa-send-text {
+  flex: 1; min-width: 0;
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  color: var(--text-primary); font-size: 12px; padding: 6px 10px;
+  border-radius: var(--radius-sm); outline: none;
+}
+.wa-send-text:focus { border-color: var(--accent); }
+
+.wa-btn {
+  background: var(--bg-tertiary); border: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 11px; padding: 5px 12px;
+  border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap;
+  font-family: var(--font-mono); transition: all 0.15s;
+}
+.wa-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.wa-btn:disabled { opacity: 0.4; cursor: default; }
+.wa-btn-primary { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.2); color: var(--accent); }
+.wa-btn-primary:hover { background: rgba(16,185,129,0.2); }
+.wa-btn-danger { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.15); color: var(--error); }
+.wa-btn-danger:hover { background: rgba(239,68,68,0.15); }
+

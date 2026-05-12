@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 pub struct AnthropicProvider {
     pub api_key: String,
     pub base_url: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Serialize)]
@@ -129,7 +130,7 @@ impl Provider for AnthropicProvider {
 
         let body = AnthropicRequest {
             model,
-            max_tokens: 8192,
+            max_tokens: self.max_tokens,
             system,
             messages: anthropic_msgs,
             tools: if anthropic_tools.is_empty() {
@@ -263,7 +264,7 @@ impl Provider for AnthropicProvider {
 
         let body = AnthropicRequest {
             model,
-            max_tokens: 8192,
+            max_tokens: self.max_tokens,
             system,
             messages: anthropic_msgs,
             tools: if anthropic_tools.is_empty() { None } else { Some(anthropic_tools) },

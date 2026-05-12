@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct NvidiaProvider {
     pub api_key: String,
     pub base_url: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Serialize)]
@@ -60,7 +61,7 @@ impl Provider for NvidiaProvider {
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: false,
             temperature: 0.0,
-            max_tokens: 8192,
+            max_tokens: self.max_tokens,
         };
 
         let client = reqwest::Client::new();
@@ -122,7 +123,7 @@ impl Provider for NvidiaProvider {
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: true,
             temperature: 0.0,
-            max_tokens: 8192,
+            max_tokens: self.max_tokens,
         };
 
         let client = reqwest::Client::builder()

@@ -23,7 +23,7 @@ function renderMarkdown(text: string): string {
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^> (.+)$/gm, '<div class="md-quote">$1</div>')
+    .replace(/^&gt; (.+)$/gm, '<div class="md-quote">$1</div>')
     .replace(/^- (.+)$/gm, '<div class="md-bullet">• $1</div>')
     .replace(/^\d+\. (.+)$/gm, '<div class="md-number">$1</div>')
     .replace(/^---$/gm, '<hr class="md-hr">')

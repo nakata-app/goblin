@@ -14,6 +14,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ConfigPanel } from './components/ConfigPanel';
 import { Sidebar } from './components/Sidebar';
 import { SessionPicker } from './components/SessionPicker';
+import { WhatsappPanel } from './components/WhatsappPanel';
 import type { GoblinState } from './types';
 import './styles/app.css';
 
@@ -72,6 +73,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
 
   // Fetch sessions on mount and show picker if there are recent ones
   useEffect(() => {
@@ -294,6 +296,11 @@ function App() {
         onToggle={() => setConfigOpen((v) => !v)}
       />
 
+      <WhatsappPanel
+        isOpen={whatsappOpen}
+        onToggle={() => setWhatsappOpen(false)}
+      />
+
       {showSessionPicker && (
         <SessionPicker
           sessions={sessions}
@@ -311,6 +318,7 @@ function App() {
             <button className="header-btn" onClick={() => setSidebarOpen(true)}>sessions</button>
             <button className="header-btn" onClick={() => setCmdOpen(true)}>⌘K</button>
             <button className="header-btn" onClick={() => setConfigOpen(true)} title="Settings">⚙</button>
+            <button className="header-btn" onClick={() => setWhatsappOpen(true)} title="WhatsApp">💬</button>
             <button className="header-btn" onClick={() => clearConversation()}>clear</button>
             <button className="header-btn" onClick={handleNewSession}>new</button>
           </div>
@@ -344,7 +352,7 @@ function App() {
       </div>
 
       {/* RIGHT: Tabbed utility */}
-      <div className="panel-resize-handle" onMouseDown={handleResizeRightMouseDown} />
+      <div className="panel-resize-handle panel-resize-handle-right" onMouseDown={handleResizeRightMouseDown} />
       <div className="panel-right" style={{ width: `${rightPanelWidth}%`, minWidth: 240, maxWidth: '50%' }}>
         <RightTabs />
       </div>

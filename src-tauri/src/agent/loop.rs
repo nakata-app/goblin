@@ -445,8 +445,10 @@ fn strip_emotion_json(content: &str) -> String {
     let re_fence = regex::Regex::new(r"(?s)```json\s*[\s\S]*?```\n?").unwrap();
     let mut out = re_fence.replace_all(content, "").to_string();
 
-    // Remove {"emotion":...} JSON object at end of content
-    if let Some(idx) = out.find("{\"emotion\"") {
+    // Remove {"emotion":...} or {\n  "emotion":...} JSON object (handle whitespace)
+    let re_emotion = regex::Regex::new(r#"\{\s*"emotion""#).unwrap();
+    if let Some(m) = re_emotion.find(&out) {
+        let idx = m.start();
         let mut depth = 0i32;
         let mut end = None;
         for (i, ch) in out[idx..].char_indices() {
@@ -480,7 +482,10 @@ fn filter_emotion_chunk(chunk: &str, depth: &mut i32) -> String {
         return String::new();
     }
 
-    if let Some(idx) = chunk.find("{\"emotion\"") {
+    // Handle whitespace between { and "emotion"
+    let re_emotion = regex::Regex::new(r#"\{\s*"emotion""#).unwrap();
+    if let Some(m) = re_emotion.find(chunk) {
+        let idx = m.start();
         let before = &chunk[..idx];
         let after = &chunk[idx..];
         for (i, ch) in after.char_indices() {

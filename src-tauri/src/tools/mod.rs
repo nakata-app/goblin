@@ -71,7 +71,7 @@ impl ToolRegistry {
     }
 }
 
-pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStore) -> ToolRegistry {
+pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStore, whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     let stt_api_key = stt.api_key.clone();
@@ -186,6 +186,81 @@ pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStor
     // Sandbox tools (Docker isolation)
     registry.register(sandbox::sandbox_exec_def(), sandbox::handle_sandbox_exec);
     registry.register(sandbox::sandbox_list_def(), sandbox::handle_sandbox_list);
+
+    // WhatsApp tools
+    {
+        let wa = whatsapp.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "whatsapp_send".to_string(),
+                    description: "Send a WhatsApp message to a phone number (international format without +, e.g. 905551234567) or JID".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "to": {
+                                "type": "string",
+                                "description": "Phone number in international format without + (e.g. 905551234567) or WhatsApp JID"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Message text to send"
+                            }
+                        },
+                        "required": ["to", "text"]
+                    }),
+                },
+            },
+            move |args| {
+                let wa = wa.clone();
+                Box::pin(async move {
+                    let to = args["to"].as_str().ok_or("Missing 'to' parameter")?.to_string();
+                    let text = args["text"].as_str().ok_or("Missing 'text' parameter")?.to_string();
+                    let result = wa.send_message(&to, &text).await?;
+                    if result.success {
+                        Ok(format!("Message sent successfully. ID: {}", result.id.unwrap_or_default()))
+                    } else {
+                        Err(format!("Failed to send: {}", result.error.unwrap_or_default()))
+                    }
+                })
+            },
+        );
+    }
+    {
+        let wa = whatsapp.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "whatsapp_check".to_string(),
+                    description: "Check WhatsApp connection status and see pending messages".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+            },
+            move |_args| {
+                let wa = wa.clone();
+                Box::pin(async move {
+                    let status = wa.get_status().await?;
+                    let messages = wa.poll_messages().await.unwrap_or_default();
+                    let msg_list: Vec<String> = messages.iter()
+                        .map(|m| format!("[{}] {}: {}", m.from, m.id, m.text))
+                        .collect();
+                    Ok(format!(
+                        "Status: {}\nUser: {}\nMessages ({}):\n{}",
+                        status.status,
+                        status.user.map(|u| u.name).unwrap_or_default(),
+                        messages.len(),
+                        if msg_list.is_empty() { "  (none)".to_string() } else { msg_list.join("\n") }
+                    ))
+                })
+            },
+        );
+    }
 
     registry
 }

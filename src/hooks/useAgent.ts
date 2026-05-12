@@ -60,7 +60,7 @@ const TOOL_EVENT_MAP: Record<string, string> = {
 
 function stripEmotionJSON(text: string): string {
   let out = text.replace(/```json\s*[\s\S]*?```\n?/g, '');
-  const emotionIdx = out.indexOf('{"emotion"');
+  const emotionIdx = out.search(/\{\s*"emotion"/);
   if (emotionIdx === -1) return out.trim();
   let depth = 0;
   let end = -1;
@@ -108,6 +108,7 @@ export function useAgent() {
   const queueRef = useRef<{ text: string; msgId: string } | null>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
   const streamingContentRef = useRef<string>('');
+  const runningToolIdRef = useRef<string | null>(null);
 
   const processSend = useCallback(
     async (text: string, existingMsgId?: string) => {
@@ -174,14 +175,18 @@ export function useAgent() {
             break;
           }
           case 'tool_start': {
-            const t = { id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: 'running' as const };
+            const tid = `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+            runningToolIdRef.current = tid;
+            const t = { id: tid, name: p.tool as string, status: 'running' as const };
             upsertTask(t);
             persistTask(t);
             setRightPanel(`[TOOL] ${p.tool}(${p.args ?? ''})${current ? '\n' + current : ''}`);
             break;
           }
           case 'tool_end': {
-            const t = { id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: (p.success ? 'done' : 'error') as 'done' | 'error' };
+            const tid = runningToolIdRef.current ?? `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+            runningToolIdRef.current = null;
+            const t = { id: tid, name: p.tool as string, status: (p.success ? 'done' : 'error') as 'done' | 'error', result: p.summary };
             upsertTask(t);
             persistTask(t);
             break;

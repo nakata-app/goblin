@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 pub struct OpenAIProvider {
     pub api_key: String,
     pub base_url: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Serialize)]
@@ -32,7 +33,6 @@ struct ChatResponse {
 struct Choice {
     message: ResponseMessage,
     #[serde(default)]
-    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -88,6 +88,7 @@ mod tests {
         let provider = OpenAIProvider {
             api_key: openai_cfg.api_key.clone(),
             base_url: openai_cfg.base_url.clone(),
+            max_tokens: config.agent.max_tokens,
         };
 
         let messages = vec![
@@ -128,6 +129,7 @@ mod tests {
         let provider = OpenAIProvider {
             api_key: openai_cfg.api_key.clone(),
             base_url: openai_cfg.base_url.clone(),
+            max_tokens: config.agent.max_tokens,
         };
 
         let messages = vec![
@@ -175,7 +177,7 @@ impl Provider for OpenAIProvider {
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: false,
             temperature: Some(0.0),
-            max_tokens: Some(8192),
+            max_tokens: Some(self.max_tokens),
         };
 
         let client = reqwest::Client::builder()
@@ -213,6 +215,22 @@ impl Provider for OpenAIProvider {
             completion_tokens: 0,
         });
 
+        let finish_reason = choice.finish_reason.as_deref().unwrap_or("");
+        let content_empty = choice
+            .message
+            .content
+            .as_ref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+        let tool_calls_empty = choice.message.tool_calls.as_ref().map(|v| v.is_empty()).unwrap_or(true);
+        if finish_reason == "length" && content_empty && tool_calls_empty {
+            return Err(format!(
+                "Model used the entire token budget on internal reasoning and emitted no answer. \
+                 Increase agent.max_tokens (current {}) in ~/.goblin/config.toml.",
+                self.max_tokens
+            ));
+        }
+
         Ok(ProviderResponse {
             content: choice.message.content,
             tool_calls: choice.message.tool_calls,
@@ -240,7 +258,7 @@ impl Provider for OpenAIProvider {
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: true,
             temperature: Some(0.0),
-            max_tokens: Some(8192),
+            max_tokens: Some(self.max_tokens),
         };
 
         let client = reqwest::Client::builder()

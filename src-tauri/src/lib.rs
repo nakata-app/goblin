@@ -7,6 +7,7 @@ mod provider;
 mod session;
 mod task;
 mod tools;
+mod whatsapp;
 
 use agent::r#loop::AgentLoop;
 use crate::config::Config;
@@ -21,8 +22,10 @@ use session::SessionStore;
 use task::TaskStore;
 use tools::ToolRegistry;
 use tools::mcp_server::McpServerHandle;
+use whatsapp::WhatsappBridge;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
+use std::sync::Arc;
 use tauri::Emitter;
 use tauri::State;
 use tauri::Manager;
@@ -36,6 +39,7 @@ struct AppState {
     session_store: SessionStore,
     cron_store: CronStore,
     task_store: TaskStore,
+    whatsapp: Arc<WhatsappBridge>,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -145,9 +149,109 @@ async fn send_message(
     }))
 }
 
+fn resolve_key_from_config<'a>(config: &'a Config, provider_type: &str) -> Option<&'a str> {
+    match provider_type {
+        "openai" => config.providers.openai.as_ref().map(|c| c.api_key.as_str()),
+        "anthropic" => config.providers.anthropic.as_ref().map(|c| c.api_key.as_str()),
+        "nvidia" => config.providers.nvidia.as_ref().map(|c| c.api_key.as_str()),
+        "gemini" => config.providers.gemini.as_ref().map(|c| c.api_key.as_str()),
+        "glm" => config.providers.glm.as_ref().map(|c| c.api_key.as_str()),
+        _ => {
+            // Check generic providers
+            config.providers.generic.iter()
+                .find(|g| g.provider_type == provider_type || g.name == provider_type)
+                .map(|g| g.api_key.as_str())
+        }
+    }
+}
+
+fn mask_api_key(key: &mut serde_json::Value) {
+    if let Some(s) = key.as_str() {
+        if s.len() > 8 {
+            let prefix = &s[..3];
+            let suffix = &s[s.len()-4..];
+            *key = serde_json::Value::String(format!("{}...{}", prefix, suffix));
+        } else if !s.is_empty() {
+            *key = serde_json::Value::String("...".to_string());
+        }
+    }
+}
+
+fn mask_api_keys(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "api_key" {
+                    mask_api_key(v);
+                } else if k == "key_pool" {
+                    if let serde_json::Value::Array(arr) = v {
+                        for item in arr.iter_mut() {
+                            mask_api_key(item);
+                        }
+                    }
+                } else {
+                    mask_api_keys(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                mask_api_keys(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_masked(s: &str) -> bool {
+    s.contains("...")
+}
+
+fn preserve_masked_keys(incoming: &mut serde_json::Value, existing: &serde_json::Value) {
+    match (incoming, existing) {
+        (serde_json::Value::Object(in_map), serde_json::Value::Object(ex_map)) => {
+            for (k, inv) in in_map.iter_mut() {
+                if k == "api_key" {
+                    if let Some(s) = inv.as_str() {
+                        if is_masked(s) {
+                            if let Some(ex_v) = ex_map.get(k) {
+                                *inv = ex_v.clone();
+                            }
+                        }
+                    }
+                } else if k == "key_pool" {
+                    if let (serde_json::Value::Array(in_arr), Some(serde_json::Value::Array(ex_arr))) = (inv, ex_map.get(k)) {
+                        for (i, item) in in_arr.iter_mut().enumerate() {
+                            if let Some(s) = item.as_str() {
+                                if is_masked(s) {
+                                    if let Some(ex_item) = ex_arr.get(i) {
+                                        *item = ex_item.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(ex_v) = ex_map.get(k) {
+                    preserve_masked_keys(inv, ex_v);
+                }
+            }
+        }
+        (serde_json::Value::Array(in_arr), serde_json::Value::Array(ex_arr)) => {
+            for (i, item) in in_arr.iter_mut().enumerate() {
+                if let Some(ex_item) = ex_arr.get(i) {
+                    preserve_masked_keys(item, ex_item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    serde_json::to_value(&state.config).map_err(|e| format!("Serialization error: {}", e))
+    let mut value = serde_json::to_value(&state.config).map_err(|e| format!("Serialization error: {}", e))?;
+    mask_api_keys(&mut value);
+    Ok(value)
 }
 
 #[tauri::command]
@@ -473,6 +577,7 @@ async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> 
             state.config.stt.clone(),
             state.config.tts.clone(),
             state.task_store.clone(),
+            state.whatsapp.clone(),
         );
         reg.definitions().iter().map(|d| {
             (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
@@ -501,7 +606,12 @@ async fn save_config(
     state: State<'_, AppState>,
     config_json: serde_json::Value,
 ) -> Result<(), String> {
-    let new_config: Config = serde_json::from_value(config_json)
+    // For masked API keys, preserve the original values from the loaded config
+    let mut incoming = config_json;
+    let existing = serde_json::to_value(&state.config).map_err(|e| format!("Serialization error: {}", e))?;
+    preserve_masked_keys(&mut incoming, &existing);
+
+    let new_config: Config = serde_json::from_value(incoming)
         .map_err(|e| format!("Invalid config JSON: {}", e))?;
 
     // Write to ~/.goblin/config.toml
@@ -521,6 +631,7 @@ async fn save_config(
         new_config.stt.clone(),
         new_config.tts.clone(),
         state.task_store.clone(),
+        state.whatsapp.clone(),
     ));
 
     // Update agent in state
@@ -535,10 +646,18 @@ async fn save_config(
 
 #[tauri::command]
 async fn test_connection(
+    state: State<'_, AppState>,
     api_key: String,
     base_url: String,
     provider_type: String,
 ) -> Result<serde_json::Value, String> {
+    // If the frontend sent a masked key (contains "..."), resolve from stored config
+    let resolved_key = if api_key.contains("...") {
+        resolve_key_from_config(&state.config, &provider_type).unwrap_or(&api_key).to_string()
+    } else {
+        api_key
+    };
+
     let start = std::time::Instant::now();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -548,7 +667,7 @@ async fn test_connection(
     let models_url = base_url.trim_end_matches('/').to_string() + "/models";
     let result = client
         .get(&models_url)
-        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Authorization", format!("Bearer {}", resolved_key))
         .send()
         .await;
 
@@ -593,6 +712,44 @@ async fn test_connection(
             }))
         }
     }
+}
+
+// ── WhatsApp Bridge Commands ──
+
+#[tauri::command]
+async fn whatsapp_start(state: State<'_, AppState>) -> Result<String, String> {
+    let app_dir = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current dir: {}", e))?
+        .to_str()
+        .ok_or("Invalid path")?
+        .to_string();
+    state.whatsapp.start(&app_dir).await?;
+    Ok("WhatsApp bridge started".to_string())
+}
+
+#[tauri::command]
+async fn whatsapp_stop(state: State<'_, AppState>) -> Result<(), String> {
+    state.whatsapp.stop().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn whatsapp_status(state: State<'_, AppState>) -> Result<whatsapp::BridgeStatus, String> {
+    state.whatsapp.get_status().await
+}
+
+#[tauri::command]
+async fn whatsapp_send(
+    state: State<'_, AppState>,
+    jid: String,
+    text: String,
+) -> Result<whatsapp::SendResult, String> {
+    state.whatsapp.send_message(&jid, &text).await
+}
+
+#[tauri::command]
+async fn whatsapp_poll(state: State<'_, AppState>) -> Result<Vec<whatsapp::WaMessage>, String> {
+    state.whatsapp.poll_messages().await
 }
 
 async fn cron_scheduler_loop(app: tauri::AppHandle) {
@@ -655,6 +812,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
                 state.config.stt.clone(),
                 state.config.tts.clone(),
                 state.task_store.clone(),
+                state.whatsapp.clone(),
             );
 
             if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
@@ -685,41 +843,49 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
 }
 
 fn init_agent(config: &Config, tool_registry: ToolRegistry) -> Option<AgentLoop> {
+    let max_tokens = config.agent.max_tokens;
     let provider: Box<dyn provider::Provider> = if let Some(openai_cfg) = &config.providers.openai {
         Box::new(OpenAIProvider {
             api_key: openai_cfg.api_key.clone(),
             base_url: openai_cfg.base_url.clone(),
+            max_tokens,
         })
     } else if let Some(anthro_cfg) = &config.providers.anthropic {
         Box::new(AnthropicProvider {
             api_key: anthro_cfg.api_key.clone(),
             base_url: anthro_cfg.base_url.clone(),
+            max_tokens,
         })
     } else if let Some(nvidia_cfg) = &config.providers.nvidia {
         Box::new(NvidiaProvider {
             api_key: nvidia_cfg.api_key.clone(),
             base_url: nvidia_cfg.base_url.clone(),
+            max_tokens,
         })
     } else if let Some(gemini_cfg) = &config.providers.gemini {
         Box::new(GeminiProvider {
             api_key: gemini_cfg.api_key.clone(),
             base_url: gemini_cfg.base_url.clone(),
+            max_tokens,
         })
     } else if let Some(glm_cfg) = &config.providers.glm {
         Box::new(GlmProvider {
             api_key: glm_cfg.api_key.clone(),
             base_url: glm_cfg.base_url.clone(),
+            max_tokens,
         })
     } else if let Some(generic) = config.providers.generic.first() {
         if generic.provider_type == "anthropic" {
             Box::new(AnthropicProvider {
                 api_key: generic.api_key.clone(),
                 base_url: generic.base_url.clone(),
+                max_tokens,
             })
         } else {
             Box::new(OpenAIProvider {
                 api_key: generic.api_key.clone(),
                 base_url: generic.base_url.clone(),
+                max_tokens,
             })
         }
     } else {
@@ -835,7 +1001,8 @@ pub fn run() {
         store
     };
 
-    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone(), task_store.clone());
+    let whatsapp_bridge = Arc::new(WhatsappBridge::new());
+    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone(), task_store.clone(), whatsapp_bridge.clone());
     let agent = init_agent(&config, tool_registry);
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -871,6 +1038,7 @@ pub fn run() {
             session_store,
             cron_store,
             task_store,
+            whatsapp: whatsapp_bridge,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -901,6 +1069,11 @@ pub fn run() {
             mcp_server_start,
             save_config,
             test_connection,
+            whatsapp_start,
+            whatsapp_stop,
+            whatsapp_status,
+            whatsapp_send,
+            whatsapp_poll,
         ])
         .setup(|app| {
             // ── System tray daemon ──
@@ -1117,7 +1290,7 @@ mod tests {
         };
 
         let tool_registry = tools::create_tool_registry(
-            config.stt.clone(), config.tts.clone(), store.clone(),
+            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()),
         );
 
         let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
@@ -1202,7 +1375,7 @@ mod tests {
             };
 
             let tool_registry = tools::create_tool_registry(
-                config.stt.clone(), config.tts.clone(), store.clone(),
+                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()),
             );
 
             let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);

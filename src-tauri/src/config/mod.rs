@@ -267,7 +267,10 @@ fn default_model() -> String {
 }
 
 fn default_max_tokens() -> u32 {
-    8192
+    // V4 reasoning models burn 100s of tokens on reasoning_content before
+    // emitting visible content. 8192 truncates real answers with
+    // finish_reason="length". 32768 leaves headroom for chain-of-thought.
+    32768
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
