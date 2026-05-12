@@ -1,4 +1,5 @@
 use crate::provider::ToolDefinition;
+use crate::task::TaskStore;
 use serde_json::json;
 
 pub fn delegate_task_def() -> ToolDefinition {
@@ -93,13 +94,16 @@ pub fn eisenhower_def() -> ToolDefinition {
     }
 }
 
-pub async fn handle_delegate_task(args: serde_json::Value) -> Result<String, String> {
+pub async fn handle_delegate_task(args: serde_json::Value, task_store: &TaskStore) -> Result<String, String> {
     let description = args["description"].as_str().ok_or("description required")?;
     let prompt = args["prompt"].as_str().ok_or("prompt required")?;
     let agent_type = args["agentType"].as_str().unwrap_or("general");
+    let session_id = args["sessionId"].as_str().unwrap_or("default");
 
     let task_id = uuid::Uuid::new_v4().to_string();
-    let ts = chrono::Utc::now().to_rfc3339();
+    let ts_str = chrono::Utc::now().to_rfc3339();
+
+    task_store.upsert_with_prompt(session_id, &task_id, description, "pending", Some(prompt), None)?;
 
     Ok(format!(
         "## Task Delegated\n\
@@ -107,15 +111,15 @@ pub async fn handle_delegate_task(args: serde_json::Value) -> Result<String, Str
          **Description:** {desc}\n\
          **Agent Type:** {agent}\n\
          **Created:** {ts}\n\
-         **Status:** QUEUED\n\n\
+         **Status:** QUEUED → persisted\n\n\
          **Instructions:**\n{prompt}\n\n\
          ---\n\
-         This task will be picked up by the {agent} sub-agent.\n\
-         Check back for results.",
+         The sub-agent will pick up this task and execute it.\n\
+         Check the Tasks tab for progress.",
         id = task_id,
         desc = description,
         agent = agent_type,
-        ts = ts,
+        ts = ts_str,
         prompt = prompt,
     ))
 }
@@ -279,6 +283,7 @@ pub async fn handle_eisenhower(args: serde_json::Value) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::TaskStore;
 
     #[test]
     fn test_defs_exist() {
@@ -289,12 +294,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_delegate_task() {
+        let ts = TaskStore::new_in_memory().unwrap();
         let result = handle_delegate_task(serde_json::json!({
             "description": "Test task",
-            "prompt": "Do something useful"
-        })).await;
+            "prompt": "Do something useful",
+            "sessionId": "test-session",
+        }), &ts).await;
         assert!(result.is_ok());
         assert!(result.unwrap().contains("QUEUED"));
+
+        // Verify task was persisted
+        let list = ts.list("test-session").unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Test task");
+        assert_eq!(list[0].status, "pending");
     }
 
     #[tokio::test]

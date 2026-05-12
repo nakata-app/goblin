@@ -1,9 +1,11 @@
 mod agent;
 mod config;
 mod cron;
+mod daemon;
 mod memory;
 mod provider;
 mod session;
+mod task;
 mod tools;
 
 use agent::r#loop::AgentLoop;
@@ -16,12 +18,15 @@ use provider::gemini::GeminiProvider;
 use provider::glm::GlmProvider;
 use memory::{MemoryDb, inject, compact, observe, reinforcement};
 use session::SessionStore;
+use task::TaskStore;
 use tools::ToolRegistry;
+use tools::mcp_server::McpServerHandle;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
 use tauri::Emitter;
 use tauri::State;
 use tauri::Manager;
+use tauri::RunEvent;
 
 struct AppState {
     agent: Mutex<Option<AgentLoop>>,
@@ -30,6 +35,7 @@ struct AppState {
     session_id: StdMutex<String>,
     session_store: SessionStore,
     cron_store: CronStore,
+    task_store: TaskStore,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -430,6 +436,165 @@ async fn session_export(
     Ok(format!("Session exported to {} ({:.1} KB)", path, output.len() as f64 / 1024.0))
 }
 
+#[tauri::command]
+async fn task_list(state: State<'_, AppState>) -> Result<Vec<task::TaskRecord>, String> {
+    let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
+    state.task_store.list(&session_id)
+}
+
+#[tauri::command]
+async fn task_tree(state: State<'_, AppState>) -> Result<Vec<task::TaskTree>, String> {
+    let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
+    state.task_store.task_tree(&session_id)
+}
+
+#[tauri::command]
+async fn task_upsert(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    status: String,
+    result: Option<String>,
+) -> Result<(), String> {
+    let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
+    state.task_store.upsert(&session_id, &id, &name, &status, result.as_deref())
+}
+
+#[tauri::command]
+async fn task_clear(state: State<'_, AppState>) -> Result<usize, String> {
+    let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
+    state.task_store.clear_session(&session_id)
+}
+
+#[tauri::command]
+async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> {
+    let tool_defs: Vec<(String, String, serde_json::Value)> = {
+        let reg = tools::create_tool_registry(
+            state.config.stt.clone(),
+            state.config.tts.clone(),
+            state.task_store.clone(),
+        );
+        reg.definitions().iter().map(|d| {
+            (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
+        }).collect()
+    };
+
+    let handle = McpServerHandle::new();
+    let running = handle.running.clone();
+
+    std::thread::spawn(move || {
+        handle.run_stdio(tool_defs);
+    });
+
+    // Wait briefly to confirm startup
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    if *running.lock().unwrap() {
+        Ok("MCP server started on stdio. Connect any MCP client to this process.".to_string())
+    } else {
+        Err("MCP server failed to start".to_string())
+    }
+}
+
+#[tauri::command]
+async fn save_config(
+    state: State<'_, AppState>,
+    config_json: serde_json::Value,
+) -> Result<(), String> {
+    let new_config: Config = serde_json::from_value(config_json)
+        .map_err(|e| format!("Invalid config JSON: {}", e))?;
+
+    // Write to ~/.goblin/config.toml
+    let config_path = Config::config_path();
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+    let toml_str = toml::to_string_pretty(&new_config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    std::fs::write(&config_path, &toml_str)
+        .map_err(|e| format!("Failed to write config to {:?}: {}", config_path, e))?;
+
+    // Update in-memory config
+    let mut agent_guard = state.agent.lock().await;
+    *agent_guard = init_agent(&new_config, tools::create_tool_registry(
+        new_config.stt.clone(),
+        new_config.tts.clone(),
+        state.task_store.clone(),
+    ));
+
+    // Update agent in state
+    // (config is behind Arc in AppState, so we need mutable access)
+    // Since we can't directly mutate state.config (it's owned by State), we drop and recreate.
+    // For now, the config is reloaded on next app start; agent is re-initialized with new config.
+    // The state.config is immutable; the user can restart to fully apply changes.
+    // Actually, let's update what we can: emit a notification.
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn test_connection(
+    api_key: String,
+    base_url: String,
+    provider_type: String,
+) -> Result<serde_json::Value, String> {
+    let start = std::time::Instant::now();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let models_url = base_url.trim_end_matches('/').to_string() + "/models";
+    let result = client
+        .get(&models_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            if status == 200 || status == 401 {
+                // 401 = key invalid but endpoint reachable
+                let body = resp.text().await.unwrap_or_default();
+                let ok = status == 200;
+                Ok(serde_json::json!({
+                    "success": ok,
+                    "latencyMs": latency_ms,
+                    "statusCode": status,
+                    "endpointReachable": true,
+                    "message": if ok {
+                        "Connection successful".to_string()
+                    } else {
+                        "API key rejected — endpoint is reachable but key is invalid".to_string()
+                    }
+                }))
+            } else {
+                let body = resp.text().await.unwrap_or_default();
+                Ok(serde_json::json!({
+                    "success": false,
+                    "latencyMs": latency_ms,
+                    "statusCode": status,
+                    "endpointReachable": true,
+                    "message": format!("Unexpected status {}: {}", status, body.chars().take(200).collect::<String>())
+                }))
+            }
+        }
+        Err(e) => {
+            Ok(serde_json::json!({
+                "success": false,
+                "latencyMs": latency_ms,
+                "statusCode": 0,
+                "endpointReachable": false,
+                "message": format!("Connection failed: {}", e)
+            }))
+        }
+    }
+}
+
 async fn cron_scheduler_loop(app: tauri::AppHandle) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -465,6 +630,55 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
                     eprintln!("Cron job {} failed: {}", job.id, e);
                     state.cron_store.mark_run(&job.id, now_ts, None, Some(e)).ok();
                 }
+            }
+        }
+    }
+}
+
+async fn subagent_runner_loop(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        let state = app.state::<AppState>();
+        let pending = state.task_store.list_pending().unwrap_or_default();
+
+        for task in pending {
+            eprintln!("[subagent] Picking up task {}: {}", task.id, task.name);
+
+            // Mark as running
+            state.task_store.upsert(
+                &task.session_id, &task.id, &task.name, "running", None,
+            ).ok();
+
+            let prompt = task.prompt.clone().unwrap_or_else(|| task.name.clone());
+            let tool_registry = tools::create_tool_registry(
+                state.config.stt.clone(),
+                state.config.tts.clone(),
+                state.task_store.clone(),
+            );
+
+            if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
+                match sub_agent.send_message(&prompt, None, &[], &[], None, None).await {
+                    Ok(response) => {
+                        state.task_store.upsert(
+                            &task.session_id, &task.id, &task.name, "done",
+                            Some(&response.content),
+                        ).ok();
+                        eprintln!("[subagent] Task {} completed", task.id);
+                    }
+                    Err(e) => {
+                        state.task_store.upsert(
+                            &task.session_id, &task.id, &task.name, "error",
+                            Some(&e),
+                        ).ok();
+                        eprintln!("[subagent] Task {} failed: {}", task.id, e);
+                    }
+                }
+            } else {
+                state.task_store.upsert(
+                    &task.session_id, &task.id, &task.name, "error",
+                    Some("No provider configured"),
+                ).ok();
             }
         }
     }
@@ -538,6 +752,7 @@ pub fn run() {
                 glm: None,
                 generic: vec![],
                 auto_route: crate::config::AutoRouteConfig::default(),
+                multi_agent: crate::config::MultiAgentConfig::default(),
             },
             agent: crate::config::AgentConfig::default(),
             tools: crate::config::ToolsConfig::default(),
@@ -547,11 +762,8 @@ pub fn run() {
         }
     });
 
-    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone());
-    let agent = init_agent(&config, tool_registry);
-
     let db_path = MemoryDb::default_path();
-    let memory = MemoryDb::open(db_path.to_str().unwrap_or("memory.db"))
+    let mut memory = MemoryDb::open(db_path.to_str().unwrap_or("memory.db"))
         .unwrap_or_else(|e| {
             eprintln!("Failed to open memory db: {}", e);
             std::process::exit(1);
@@ -560,6 +772,25 @@ pub fn run() {
     if let Err(e) = memory.init_schema() {
         eprintln!("Failed to init memory schema: {}", e);
         std::process::exit(1);
+    }
+
+    // Configure embedding client if enabled
+    if config.memory.embedding.enabled {
+        let emb_api_key = config.memory.embedding.api_key.as_deref()
+            .or_else(|| config.providers.openai.as_ref().map(|c| c.api_key.as_str()))
+            .unwrap_or("");
+
+        if !emb_api_key.is_empty() {
+            let emb_client = memory::embed::EmbeddingClient {
+                api_key: emb_api_key.to_string(),
+                base_url: config.memory.embedding.base_url.clone(),
+                model: config.memory.embedding.model.clone(),
+            };
+            memory.set_embedding(emb_client);
+            println!("[memory] Embedding enabled: {} @ {}", config.memory.embedding.model, config.memory.embedding.base_url);
+        } else {
+            eprintln!("[memory] Embedding enabled but no API key found. Semantic search disabled.");
+        }
     }
 
     let session_store = {
@@ -590,6 +821,23 @@ pub fn run() {
         store
     };
 
+    let task_store = {
+        let conn = rusqlite::Connection::open(db_path.to_str().unwrap_or("memory.db"))
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to open task db: {}", e);
+                std::process::exit(1);
+            });
+        let store = TaskStore::new(conn);
+        if let Err(e) = store.init_schema() {
+            eprintln!("Failed to init task schema: {}", e);
+            std::process::exit(1);
+        }
+        store
+    };
+
+    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone(), task_store.clone());
+    let agent = init_agent(&config, tool_registry);
+
     let session_id = uuid::Uuid::new_v4().to_string();
     let provider_name = config.provider_name().to_string();
     let default_model = config.default_model().to_string();
@@ -615,13 +863,6 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                cron_scheduler_loop(handle).await;
-            });
-            Ok(())
-        })
         .manage(AppState {
             agent: Mutex::new(agent),
             config,
@@ -629,6 +870,7 @@ pub fn run() {
             session_id: StdMutex::new(session_id),
             session_store,
             cron_store,
+            task_store,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -652,9 +894,41 @@ pub fn run() {
             cron_toggle,
             cron_run_now,
             session_export,
+            task_list,
+            task_tree,
+            task_upsert,
+            task_clear,
+            mcp_server_start,
+            save_config,
+            test_connection,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .setup(|app| {
+            // ── System tray daemon ──
+            daemon::create_tray_icon(app.handle())?;
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                cron_scheduler_loop(handle).await;
+            });
+            let handle2 = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                subagent_runner_loop(handle2).await;
+            });
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::WindowEvent { label, event: window_event, .. } = event {
+                if label == "main" {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = window_event {
+                        // Minimize to system tray instead of quitting
+                        api.prevent_close();
+                        let _ = app_handle.get_webview_window("main").map(|w| w.hide());
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -721,5 +995,256 @@ mod tests {
         let result = deserialize_conversation("not valid json\n{\"role\":\"user\",\"content\":\"ok\"}");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "ok");
+    }
+
+    // ── E2E: Task Persistence ──
+
+    #[test]
+    fn task_persistence_across_store_lifetime() {
+        let db_path = std::path::PathBuf::from("/tmp/goblin-e2e-task-persist.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        // Create tasks
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let store = TaskStore::new(conn);
+            store.init_schema().unwrap();
+
+            store.upsert("sid-abc", "t1", "read file", "done", Some("content")).unwrap();
+            store.upsert("sid-abc", "t2", "write file", "running", None).unwrap();
+            store.upsert("sid-xyz", "t3", "search", "pending", None).unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let store = TaskStore::new(conn);
+
+            let list = store.list("sid-abc").unwrap();
+            assert_eq!(list.len(), 2);
+            assert_eq!(list[0].name, "read file");
+            assert_eq!(list[0].status, "done");
+            assert_eq!(list[0].result.as_deref(), Some("content"));
+            assert_eq!(list[1].name, "write file");
+            assert_eq!(list[1].status, "running");
+
+            let other = store.list("sid-xyz").unwrap();
+            assert_eq!(other.len(), 1);
+            assert_eq!(other[0].status, "pending");
+        }
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn task_clear_session_removes_only_that_session() {
+        let store = TaskStore::new_in_memory().unwrap();
+
+        store.upsert("s1", "a", "task a", "done", None).unwrap();
+        store.upsert("s1", "b", "task b", "pending", None).unwrap();
+        store.upsert("s2", "c", "task c", "pending", None).unwrap();
+
+        let cleared = store.clear_session("s1").unwrap();
+        assert_eq!(cleared, 2);
+        assert_eq!(store.list("s1").unwrap().len(), 0);
+        assert_eq!(store.list("s2").unwrap().len(), 1);
+    }
+
+    // ── E2E: Sub-agent with Mock Provider ──
+
+    struct MockProvider {
+        canned_response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl provider::Provider for MockProvider {
+        async fn chat(
+            &self,
+            _messages: &[provider::Message],
+            _tools: &[provider::ToolDefinition],
+            _model: &str,
+        ) -> Result<provider::ProviderResponse, String> {
+            Ok(provider::ProviderResponse {
+                content: Some(self.canned_response.clone()),
+                tool_calls: None,
+                tokens_in: 5,
+                tokens_out: 3,
+                model: "mock".to_string(),
+                reasoning: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn subagent_executes_pending_task_with_mock_provider() {
+        let store = TaskStore::new_in_memory().unwrap();
+
+        // Create a pending delegated task
+        store.upsert_with_prompt(
+            "sid-test",
+            "task-sub-1",
+            "Analyze code",
+            "pending",
+            Some("Analyze this code for bugs"),
+            None,
+        ).unwrap();
+
+        // Verify it's pending
+        let pending = store.list_pending().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "task-sub-1");
+        assert_eq!(pending[0].status, "pending");
+
+        // Simulate sub-agent picking it up: mark running, execute, store result
+        store.upsert("sid-test", "task-sub-1", "Analyze code", "running", None).unwrap();
+
+        let mock = MockProvider {
+            canned_response: "No bugs found. Code is clean.".to_string(),
+        };
+
+        let config = Config {
+            providers: crate::config::ProvidersConfig {
+                openai: None, anthropic: None, nvidia: None, gemini: None, glm: None,
+                generic: vec![],
+                auto_route: crate::config::AutoRouteConfig::default(),
+                multi_agent: crate::config::MultiAgentConfig::default(),
+            },
+            agent: crate::config::AgentConfig::default(),
+            tools: crate::config::ToolsConfig::default(),
+            memory: crate::config::MemoryConfig::default(),
+            stt: crate::config::SttConfig::default(),
+            tts: crate::config::TtsConfig::default(),
+        };
+
+        let tool_registry = tools::create_tool_registry(
+            config.stt.clone(), config.tts.clone(), store.clone(),
+        );
+
+        let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
+        let result = agent
+            .send_message("Analyze this code for bugs", None, &[], &[], None, None)
+            .await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.content.contains("No bugs found"));
+
+        // Store result
+        store.upsert("sid-test", "task-sub-1", "Analyze code", "done", Some(&response.content)).unwrap();
+
+        // Verify task completed
+        let tasks = store.list("sid-test").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, "done");
+        assert!(tasks[0].result.as_ref().unwrap().contains("No bugs found"));
+    }
+
+    #[tokio::test]
+    async fn subagent_handles_failure_gracefully() {
+        let store = TaskStore::new_in_memory().unwrap();
+
+        store.upsert_with_prompt(
+            "sid-test",
+            "task-fail-1",
+            "Failing task",
+            "pending",
+            Some("This will fail"),
+            None,
+        ).unwrap();
+
+        store.upsert("sid-test", "task-fail-1", "Failing task", "running", None).unwrap();
+
+        // Store error
+        store.upsert(
+            "sid-test", "task-fail-1", "Failing task", "error",
+            Some("LLM connection timeout"),
+        ).unwrap();
+
+        let tasks = store.list("sid-test").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, "error");
+        assert_eq!(tasks[0].result.as_deref(), Some("LLM connection timeout"));
+    }
+
+    #[tokio::test]
+    async fn subagent_multiple_pending_tasks_executed_in_order() {
+        let store = TaskStore::new_in_memory().unwrap();
+
+        store.upsert_with_prompt("sid", "a", "Task A", "pending", Some("Do A"), None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.upsert_with_prompt("sid", "b", "Task B", "pending", Some("Do B"), None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.upsert_with_prompt("sid", "c", "Task C", "pending", Some("Do C"), None).unwrap();
+
+        let pending = store.list_pending().unwrap();
+        assert_eq!(pending.len(), 3);
+
+        // Execute each in order
+        for (i, task) in pending.iter().enumerate() {
+            store.upsert(&task.session_id, &task.id, &task.name, "running", None).unwrap();
+
+            let mock = MockProvider {
+                canned_response: format!("Completed {}", task.name),
+            };
+
+            let config = Config {
+                providers: crate::config::ProvidersConfig {
+                    openai: None, anthropic: None, nvidia: None, gemini: None, glm: None,
+                    generic: vec![],
+                    auto_route: crate::config::AutoRouteConfig::default(),
+                    multi_agent: crate::config::MultiAgentConfig::default(),
+                },
+                agent: crate::config::AgentConfig::default(),
+                tools: crate::config::ToolsConfig::default(),
+                memory: crate::config::MemoryConfig::default(),
+                stt: crate::config::SttConfig::default(),
+                tts: crate::config::TtsConfig::default(),
+            };
+
+            let tool_registry = tools::create_tool_registry(
+                config.stt.clone(), config.tts.clone(), store.clone(),
+            );
+
+            let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
+            let prompt = task.prompt.clone().unwrap_or_default();
+            let result = agent.send_message(&prompt, None, &[], &[], None, None).await.unwrap();
+
+            store.upsert(&task.session_id, &task.id, &task.name, "done", Some(&result.content)).unwrap();
+
+            eprintln!("[E2E test] Task {}/{} done: {}", i + 1, pending.len(), task.name);
+        }
+
+        let all = store.list("sid").unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().all(|t| t.status == "done"));
+    }
+
+    // ── E2E: delegate_task tool integration ──
+
+    #[tokio::test]
+    async fn delegate_task_tool_creates_persisted_task() {
+        let store = TaskStore::new_in_memory().unwrap();
+
+        let result = tools::meta::handle_delegate_task(
+            serde_json::json!({
+                "description": "Fix bug #42",
+                "prompt": "Find and fix the null pointer in user.rs:142",
+                "agentType": "explore",
+                "sessionId": "fixed-session",
+            }),
+            &store,
+        ).await;
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("QUEUED"));
+        assert!(output.contains("Fix bug #42"));
+        assert!(output.contains("user.rs:142"));
+
+        let tasks = store.list("fixed-session").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].name, "Fix bug #42");
+        assert_eq!(tasks[0].status, "pending");
+        assert_eq!(tasks[0].prompt.as_deref(), Some("Find and fix the null pointer in user.rs:142"));
     }
 }

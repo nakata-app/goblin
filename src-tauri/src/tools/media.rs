@@ -258,12 +258,30 @@ async fn handle_edge_tts(
         std::fs::write(&tmp, &audio)
             .map_err(|e| format!("Failed to write temp audio: {}", e))?;
 
+        let tmp_path = tmp.to_str().unwrap().to_string();
+
         #[cfg(target_os = "macos")]
         {
             Command::new("afplay")
-                .arg(tmp.to_str().unwrap())
+                .arg(&tmp_path)
                 .spawn()
                 .map_err(|e| format!("afplay failed: {}", e))?;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("powershell")
+                .args(["-c", &format!("(New-Object Media.SoundPlayer '{}').PlaySync()", tmp_path)])
+                .spawn()
+                .ok();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("paplay")
+                .arg(&tmp_path)
+                .spawn()
+                .ok();
         }
 
         Ok(format!("Spoken via Edge TTS ({})", voice_name))
@@ -319,12 +337,30 @@ async fn handle_openai_tts(
         std::fs::write(&tmp, &audio)
             .map_err(|e| format!("Failed to write temp audio: {}", e))?;
 
+        let tmp_path = tmp.to_str().unwrap().to_string();
+
         #[cfg(target_os = "macos")]
         {
             Command::new("afplay")
-                .arg(tmp.to_str().unwrap())
+                .arg(&tmp_path)
                 .spawn()
                 .map_err(|e| format!("afplay failed: {}", e))?;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("powershell")
+                .args(["-c", &format!("(New-Object Media.SoundPlayer '{}').PlaySync()", tmp_path)])
+                .spawn()
+                .ok();
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("paplay")
+                .arg(&tmp_path)
+                .spawn()
+                .ok();
         }
 
         Ok(format!("Spoken via OpenAI TTS ({})", voice_name))
@@ -434,7 +470,37 @@ pub async fn handle_voice_record(
 
         #[cfg(not(target_os = "linux"))]
         {
-            return Err("voice_record currently requires macOS (ffmpeg/sox) or Linux (arecord)".to_string());
+            #[cfg(target_os = "windows")]
+            {
+                // Windows: use ffmpeg if available
+                let ffmpeg_check = Command::new("ffmpeg").arg("-version").output().ok();
+                if ffmpeg_check.is_some() {
+                    let output = Command::new("ffmpeg")
+                        .args([
+                            "-y",
+                            "-f", "dshow",
+                            "-i", "audio=default",
+                            "-t", &duration.to_string(),
+                            "-ar", "16000",
+                            "-ac", "1",
+                            "-sample_fmt", "s16",
+                            audio_path.to_str().unwrap(),
+                        ])
+                        .output()
+                        .map_err(|e| format!("ffmpeg record failed: {}", e))?;
+
+                    if !output.status.success() {
+                        return Err("ffmpeg recording failed on Windows".to_string());
+                    }
+                } else {
+                    return Err("voice_record on Windows requires ffmpeg. Install: winget install ffmpeg".to_string());
+                }
+            }
+
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                return Err("voice_record currently requires macOS (ffmpeg/sox), Linux (arecord), or Windows (ffmpeg)".to_string());
+            }
         }
     }
 

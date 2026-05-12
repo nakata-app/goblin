@@ -29,7 +29,8 @@ export type GoblinState =
   | 'searching'
   | 'running'
   | 'error'
-  | 'success';
+  | 'success'
+  | 'streaming';
 
 export interface Session {
   id: string;

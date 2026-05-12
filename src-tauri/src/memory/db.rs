@@ -1,9 +1,11 @@
 use rusqlite::{Connection, params};
 use std::sync::Mutex;
 use std::path::PathBuf;
+use super::embed::{EmbeddingClient, cosine_similarity};
 
 pub struct MemoryDb {
     conn: Mutex<Connection>,
+    embedding: Option<EmbeddingClient>,
 }
 
 impl MemoryDb {
@@ -14,7 +16,11 @@ impl MemoryDb {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("Pragma error: {}", e))?;
 
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), embedding: None })
+    }
+
+    pub fn set_embedding(&mut self, client: EmbeddingClient) {
+        self.embedding = Some(client);
     }
 
     pub fn default_path() -> PathBuf {
@@ -55,6 +61,11 @@ impl MemoryDb {
                 last_seen INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS embeddings (
+                memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                vector BLOB NOT NULL
+            );
+
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text, ns, content=memories, content_rowid=rowid);"
         ).map_err(|e| format!("Schema init error: {}", e))?;
 
@@ -79,10 +90,132 @@ impl MemoryDb {
             params![id, ns, tier, text, meta, now],
         ).map_err(|e| format!("Insert error: {}", e))?;
 
+        // Generate and store embedding if configured
+        if let Some(ref emb) = self.embedding {
+            match emb.embed_blocking(text) {
+                Ok(vector) => {
+                    let blob = serialize_f32_vec(&vector);
+                    conn.execute(
+                        "INSERT INTO embeddings (memory_id, vector) VALUES (?1, ?2)",
+                        params![id, blob],
+                    ).ok();
+                }
+                Err(e) => {
+                    eprintln!("[memory] embedding gen failed for '{}': {}", id, e);
+                }
+            }
+        }
+
         Ok(())
     }
 
     pub fn search_memories(
+        &self,
+        ns: Option<&str>,
+        query: &str,
+        limit: i32,
+    ) -> Result<Vec<MemoryRecord>, String> {
+        // Try semantic search if embedding is configured
+        if let Some(ref emb) = self.embedding {
+            if let Ok(query_vec) = emb.embed_blocking(query) {
+                return self.semantic_search(ns, &query_vec, limit);
+            }
+        }
+
+        // Fallback: LIKE-based search
+        self.like_search(ns, query, limit)
+    }
+
+    fn semantic_search(
+        &self,
+        ns: Option<&str>,
+        query_vec: &[f32],
+        limit: i32,
+    ) -> Result<Vec<MemoryRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let now = current_timestamp();
+
+        // Fetch all memories with embeddings for the namespace
+        let sql = if ns.is_some() {
+            "SELECT m.id, m.ns, m.tier, m.text, m.meta, m.created, m.last_accessed, m.access_count, e.vector
+             FROM memories m
+             INNER JOIN embeddings e ON m.id = e.memory_id
+             WHERE m.ns = ?1
+             ORDER BY m.tier DESC, m.last_accessed DESC"
+        } else {
+            "SELECT m.id, m.ns, m.tier, m.text, m.meta, m.created, m.last_accessed, m.access_count, e.vector
+             FROM memories m
+             INNER JOIN embeddings e ON m.id = e.memory_id
+             ORDER BY m.tier DESC, m.last_accessed DESC"
+        };
+
+        let mut stmt = conn.prepare(sql).map_err(|e| format!("Prepare error: {}", e))?;
+
+        let mut scored: Vec<(f32, MemoryRecord)> = Vec::new();
+
+        let rows: Vec<rusqlite::Result<(f32, MemoryRecord)>> = if let Some(ns_val) = ns {
+            stmt.query_map(params![ns_val], |row| {
+                let blob: Vec<u8> = row.get(8)?;
+                let vec = deserialize_f32_vec(&blob);
+                let sim = cosine_similarity(query_vec, &vec);
+                Ok((sim, MemoryRecord {
+                    id: row.get(0)?,
+                    ns: row.get(1)?,
+                    tier: row.get(2)?,
+                    text: row.get(3)?,
+                    meta: row.get(4)?,
+                    created: row.get(5)?,
+                    last_accessed: row.get(6)?,
+                    access_count: row.get(7)?,
+                }))
+            }).map_err(|e| format!("Query error: {}", e))?
+            .collect()
+        } else {
+            stmt.query_map([], |row| {
+                let blob: Vec<u8> = row.get(8)?;
+                let vec = deserialize_f32_vec(&blob);
+                let sim = cosine_similarity(query_vec, &vec);
+                Ok((sim, MemoryRecord {
+                    id: row.get(0)?,
+                    ns: row.get(1)?,
+                    tier: row.get(2)?,
+                    text: row.get(3)?,
+                    meta: row.get(4)?,
+                    created: row.get(5)?,
+                    last_accessed: row.get(6)?,
+                    access_count: row.get(7)?,
+                }))
+            }).map_err(|e| format!("Query error: {}", e))?
+            .collect()
+        };
+
+        for row in rows {
+            if let Ok((sim, record)) = row {
+                scored.push((sim, record));
+            }
+        }
+
+        // Sort by similarity descending
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let results: Vec<MemoryRecord> = scored
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, r)| r)
+            .collect();
+
+        // Update last_accessed and access_count for found memories
+        for record in &results {
+            conn.execute(
+                "UPDATE memories SET last_accessed = ?1, access_count = access_count + 1 WHERE id = ?2",
+                params![now, record.id],
+            ).ok();
+        }
+
+        Ok(results)
+    }
+
+    fn like_search(
         &self,
         ns: Option<&str>,
         query: &str,
@@ -328,6 +461,21 @@ fn simple_hash(s: &str) -> String {
     format!("{:x}", hasher.finish())
 }
 
+fn serialize_f32_vec(vec: &[f32]) -> Vec<u8> {
+    vec.iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
+}
+
+fn deserialize_f32_vec(data: &[u8]) -> Vec<f32> {
+    data.chunks_exact(4)
+        .map(|chunk| {
+            let arr: [u8; 4] = chunk.try_into().unwrap();
+            f32::from_le_bytes(arr)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,9 +508,13 @@ mod tests {
                 preference TEXT NOT NULL,
                 reinforcement_count INTEGER DEFAULT 1,
                 last_seen INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS embeddings (
+                memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                vector BLOB NOT NULL
             );"
         ).unwrap();
-        MemoryDb { conn: Mutex::new(conn) }
+        MemoryDb { conn: Mutex::new(conn), embedding: None }
     }
 
     #[test]
@@ -484,5 +636,44 @@ mod tests {
         db.add_memory("dup", "ns:d", 1, "first", None).unwrap();
         let result = db.add_memory("dup", "ns:d", 1, "second", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn serialize_deserialize_round_trip() {
+        let original = vec![1.0, -2.5, 0.0, 3.14_f32];
+        let blob = serialize_f32_vec(&original);
+        let restored = deserialize_f32_vec(&blob);
+        assert_eq!(original.len(), restored.len());
+        for (a, b) in original.iter().zip(restored.iter()) {
+            assert!((a - b).abs() < 1e-6, "{} != {}", a, b);
+        }
+    }
+
+    #[test]
+    fn serialize_deserialize_empty() {
+        let blob = serialize_f32_vec(&[]);
+        let restored = deserialize_f32_vec(&blob);
+        assert!(restored.is_empty());
+    }
+
+    #[test]
+    fn search_falls_back_to_like_when_no_embedding() {
+        let db = in_memory_db();
+        db.add_memory("m1", "ns:test", 1, "Rust programming language", None).unwrap();
+        db.add_memory("m2", "ns:test", 1, "Python scripting", None).unwrap();
+
+        let results = db.search_memories(Some("ns:test"), "Python", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "Python scripting");
+    }
+
+    #[test]
+    fn search_no_ns_returns_all_matching() {
+        let db = in_memory_db();
+        db.add_memory("a", "ns:a", 1, "common word", None).unwrap();
+        db.add_memory("b", "ns:b", 1, "another common", None).unwrap();
+
+        let results = db.search_memories(None, "common", 10).unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

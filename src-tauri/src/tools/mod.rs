@@ -8,12 +8,15 @@ pub mod media;
 pub mod meta;
 pub mod vault;
 pub mod mcp;
+pub mod mcp_server;
 pub mod skills;
 pub mod peer;
 pub mod compactor;
+pub mod sandbox;
 
 use crate::config::SttConfig;
 use crate::config::TtsConfig;
+use crate::task::TaskStore;
 
 use crate::provider::ToolDefinition;
 use std::collections::HashMap;
@@ -68,7 +71,7 @@ impl ToolRegistry {
     }
 }
 
-pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig) -> ToolRegistry {
+pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig, task_store: TaskStore) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     let stt_api_key = stt.api_key.clone();
@@ -146,7 +149,13 @@ pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig) -> ToolRegistry {
     }
 
     // Faz 9: Meta tools
-    registry.register(meta::delegate_task_def(), meta::handle_delegate_task);
+    {
+        let ts = task_store.clone();
+        registry.register(meta::delegate_task_def(), move |args| {
+            let ts = ts.clone();
+            Box::pin(async move { meta::handle_delegate_task(args, &ts).await })
+        });
+    }
     registry.register(meta::premortem_def(), meta::handle_premortem);
     registry.register(meta::eisenhower_def(), meta::handle_eisenhower);
 
@@ -166,12 +175,17 @@ pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig) -> ToolRegistry {
     registry.register(skills::skill_list_def(), skills::handle_skill_list);
     registry.register(skills::skill_view_def(), skills::handle_skill_view);
     registry.register(skills::skill_manage_def(), skills::handle_skill_manage);
+    registry.register(skills::skill_search_def(), skills::handle_skill_search);
 
     // Faz 9: Peer tools
     registry.register(peer::peer_send_def(), peer::handle_peer_send);
     registry.register(peer::peer_broadcast_def(), peer::handle_peer_broadcast);
     registry.register(peer::peer_status_def(), peer::handle_peer_status);
     registry.register(peer::peer_coordinate_def(), peer::handle_peer_coordinate);
+
+    // Sandbox tools (Docker isolation)
+    registry.register(sandbox::sandbox_exec_def(), sandbox::handle_sandbox_exec);
+    registry.register(sandbox::sandbox_list_def(), sandbox::handle_sandbox_list);
 
     registry
 }

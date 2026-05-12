@@ -1,5 +1,6 @@
-use super::{Message, Provider, ProviderResponse, ToolDefinition};
+use super::{Message, Provider, ProviderResponse, ToolDefinition, ToolCall};
 use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
 
 pub struct OpenAIProvider {
     pub api_key: String,
@@ -48,6 +49,29 @@ struct ResponseMessage {
 struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct StreamChunk {
+    choices: Vec<StreamChoice>,
+    usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    delta: StreamDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[cfg(test)]
@@ -198,4 +222,117 @@ impl Provider for OpenAIProvider {
             reasoning: choice.message.reasoning_content,
         })
     }
+
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        on_chunk: Box<dyn Fn(String) + Send>,
+        on_reasoning: Box<dyn Fn(String) + Send>,
+    ) -> Result<ProviderResponse, String> {
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+
+        let request_body = ChatRequest {
+            model,
+            messages,
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice: if tools.is_empty() { None } else { Some("auto") },
+            stream: true,
+            temperature: Some(0.0),
+            max_tokens: Some(8192),
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("API error {}: {}", status, body));
+        }
+
+        parse_sse_stream(resp, model, on_chunk, on_reasoning).await
+    }
+}
+
+pub async fn parse_sse_stream(
+    resp: reqwest::Response,
+    model: &str,
+    on_chunk: Box<dyn Fn(String) + Send>,
+    on_reasoning: Box<dyn Fn(String) + Send>,
+) -> Result<ProviderResponse, String> {
+    let mut stream = resp.bytes_stream();
+    let mut full_content = String::new();
+    let mut full_reasoning = String::new();
+    let mut full_tool_calls: Vec<ToolCall> = Vec::new();
+    let mut tokens_in: u32 = 0;
+    let mut tokens_out: u32 = 0;
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk_bytes = chunk_result.map_err(|e| format!("Stream read error: {}", e))?;
+        let chunk_text = String::from_utf8_lossy(&chunk_bytes);
+
+        for line in chunk_text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if line == "data: [DONE]" {
+                break;
+            }
+            if !line.starts_with("data: ") {
+                continue;
+            }
+
+            let json_str = &line["data: ".len()..];
+            let parsed: StreamChunk = match serde_json::from_str(json_str) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if let Some(usage) = parsed.usage {
+                tokens_in = usage.prompt_tokens;
+                tokens_out = usage.completion_tokens;
+            }
+
+            let choices = parsed.choices;
+            for choice in &choices {
+                if let Some(ref content) = choice.delta.content {
+                    full_content.push_str(content);
+                    on_chunk(content.clone());
+                }
+                if let Some(ref reasoning) = choice.delta.reasoning_content {
+                    full_reasoning.push_str(reasoning);
+                    on_reasoning(reasoning.clone());
+                }
+                if let Some(ref tcs) = choice.delta.tool_calls {
+                    for tc in tcs {
+                        full_tool_calls.push(tc.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ProviderResponse {
+        content: if full_content.is_empty() { None } else { Some(full_content) },
+        tool_calls: if full_tool_calls.is_empty() { None } else { Some(full_tool_calls) },
+        tokens_in,
+        tokens_out,
+        model: model.to_string(),
+        reasoning: if full_reasoning.is_empty() { None } else { Some(full_reasoning) },
+    })
 }

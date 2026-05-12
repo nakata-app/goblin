@@ -207,15 +207,17 @@ export function RightTabs() {
             <h3 className="md-heading h3">Git</h3>
             <div className="md-bullet">git_status, git_diff, git_commit, git_log, git_pr_create</div>
             <h3 className="md-heading h3">Media</h3>
-            <div className="md-bullet">vision_analyze, text_to_speech</div>
+            <div className="md-bullet">vision_analyze, text_to_speech, voice_record</div>
             <h3 className="md-heading h3">Meta</h3>
             <div className="md-bullet">delegate_task, premortem, eisenhower</div>
+            <h3 className="md-heading h3">Sandbox</h3>
+            <div className="md-bullet">sandbox_exec, sandbox_list</div>
             <h3 className="md-heading h3">Vault (Obsidian)</h3>
             <div className="md-bullet">obsidian_read, obsidian_write, obsidian_search, vault_stats</div>
             <h3 className="md-heading h3">MCP</h3>
-            <div className="md-bullet">mcp_connect, mcp_list_tools, mcp_call_tool, mcp_install</div>
+            <div className="md-bullet">mcp_connect, mcp_list_tools, mcp_call_tool, mcp_install, mcp_server_start</div>
             <h3 className="md-heading h3">Skills</h3>
-            <div className="md-bullet">skill_list, skill_view, skill_manage</div>
+            <div className="md-bullet">skill_list, skill_view, skill_manage, skill_search</div>
             <h3 className="md-heading h3">Peer</h3>
             <div className="md-bullet">peer_send, peer_broadcast, peer_status, peer_coordinate</div>
           </div>

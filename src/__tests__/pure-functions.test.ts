@@ -146,8 +146,8 @@ describe('groupBy', () => {
 });
 
 describe('STATE_EMOJI', () => {
-  it('has all 8 states', () => {
-    const states = ['idle', 'thinking', 'reading', 'writing', 'searching', 'running', 'error', 'success'];
+  it('has all 9 states', () => {
+    const states = ['idle', 'thinking', 'reading', 'writing', 'searching', 'running', 'error', 'success', 'streaming'];
     for (const s of states) {
       expect(STATE_EMOJI).toHaveProperty(s);
       expect(STATE_EMOJI[s as keyof typeof STATE_EMOJI]).toBeTruthy();

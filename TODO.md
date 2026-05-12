@@ -104,3 +104,20 @@
 - [x] Glass morphism effects (backdrop-filter, 2 katman derinlik, border pulse, text glow)
 - [x] Tauri bundle (macOS .dmg config, overlay title bar, traffic light pozisyonu, updater artifacts)
 - [x] Test: 42 Rust + 22 vitest = 64 ✅
+
+## Faz 11: System Tray Daemon ✅
+- [x] Rust: daemon.rs — TrayIconBuilder + menu (Show/Hide/Status/Quit)
+- [x] Rust: sol-klik toggle pencere goster/gizle
+- [x] Rust: close = minimize to tray (CloseRequested -> prevent_close + hide)
+- [x] Rust: tray-status-update event (frontend'e real-time durum aktarimi)
+- [x] Cargo.toml: tray-icon + image-png feature
+- [x] Test: 197 Rust + 62 vitest = 259 ✅
+
+## Faz 12: Rekabet Analizi Eksikleri ✅
+- [x] Provider streaming: Anthropic SSE, NVIDIA SSE, GLM SSE (OpenAI-compatible reuse)
+- [x] MCP server mode: stdio JSON-RPC, tools/list, tools/call, initialize
+- [x] Multi-agent routing: AgentProfile config, trigger-based dispatch, per-agent tools/model
+- [x] Agent hierarchy: task depth tracking, parent_id, subtask tree builder, depth limit
+- [x] Skill marketplace: builtin registry (11 skills), search by query/tags, publish manifest
+- [x] Docker sandbox: sandbox_exec (isolated container), sandbox_list, memory/cpu/network limits
+- [x] Windows support: shell (cmd /C fallback), voice record (ffmpeg), TTS playback (powershell)

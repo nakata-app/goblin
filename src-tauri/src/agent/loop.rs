@@ -4,6 +4,7 @@ use crate::tools::ToolRegistry;
 use super::prompt;
 use super::context::ContextWindow;
 use std::collections::HashMap;
+use std::cell::Cell;
 use tokio::sync::mpsc;
 
 pub struct AgentLoop {
@@ -159,10 +160,44 @@ impl AgentLoop {
                 }));
             }
 
-            let resp = self
-                .provider
-                .chat(&messages, &tools, model)
-                .await?;
+            let use_stream = round == 0 && !tools.is_empty();
+
+            let resp = if use_stream {
+                let stream_tx = progress.clone();
+                let emotion_depth = Cell::new(0i32);
+                let reasoning_tx = progress.clone();
+                match self.provider.chat_stream(
+                    &messages, &tools, model,
+                    Box::new(move |chunk: String| {
+                        if let Some(ref tx) = stream_tx {
+                            let mut depth = emotion_depth.get();
+                            let filtered = filter_emotion_chunk(&chunk, &mut depth);
+                            emotion_depth.set(depth);
+                            if !filtered.is_empty() {
+                                let _ = tx.send(serde_json::json!({
+                                    "type": "content_chunk",
+                                    "chunk": filtered,
+                                }));
+                            }
+                        }
+                    }),
+                    Box::new(move |reasoning: String| {
+                        if let Some(ref tx) = reasoning_tx {
+                            let _ = tx.send(serde_json::json!({
+                                "type": "reasoning_chunk",
+                                "chunk": reasoning,
+                            }));
+                        }
+                    }),
+                ).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        self.provider.chat(&messages, &tools, model).await?
+                    }
+                }
+            } else {
+                self.provider.chat(&messages, &tools, model).await?
+            };
 
             total_tokens_in += resp.tokens_in;
             total_tokens_out += resp.tokens_out;
@@ -322,6 +357,9 @@ impl AgentLoop {
             );
         }
 
+        // Strip emotion JSON from final response
+        let clean_content = strip_emotion_json(&final_content);
+
         self.conversation.push(Message {
             role: "user".to_string(),
             content: user_input.to_string(),
@@ -338,7 +376,7 @@ impl AgentLoop {
         // Add final assistant response without tool_calls
         self.conversation.push(Message {
             role: "assistant".to_string(),
-            content: final_content.clone(),
+            content: clean_content.clone(),
             tool_calls: None,
             tool_call_id: None,
             reasoning: None,
@@ -347,7 +385,7 @@ impl AgentLoop {
         self.context_window.trim(&mut self.conversation);
 
         Ok(AgentResponse {
-            content: final_content,
+            content: clean_content,
             tool_calls: if all_tool_calls.is_empty() { None } else { Some(all_tool_calls) },
             tokens_in: total_tokens_in,
             tokens_out: total_tokens_out,
@@ -400,4 +438,62 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &s[..max_len])
     }
+}
+
+fn strip_emotion_json(content: &str) -> String {
+    // Remove ```json ... ``` blocks
+    let re_fence = regex::Regex::new(r"(?s)```json\s*[\s\S]*?```\n?").unwrap();
+    let mut out = re_fence.replace_all(content, "").to_string();
+
+    // Remove {"emotion":...} JSON object at end of content
+    if let Some(idx) = out.find("{\"emotion\"") {
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, ch) in out[idx..].char_indices() {
+            if ch == '{' { depth += 1; }
+            if ch == '}' {
+                depth -= 1;
+                if depth == 0 { end = Some(idx + i + 1); break; }
+            }
+        }
+        if let Some(e) = end {
+            if serde_json::from_str::<serde_json::Value>(&out[idx..e]).is_ok() {
+                out = format!("{}{}", &out[..idx], &out[e..]);
+            }
+        }
+    }
+
+    out.trim().to_string()
+}
+
+fn filter_emotion_chunk(chunk: &str, depth: &mut i32) -> String {
+    if *depth > 0 {
+        for (i, ch) in chunk.char_indices() {
+            if ch == '{' { *depth += 1; }
+            if ch == '}' {
+                *depth -= 1;
+                if *depth == 0 {
+                    return chunk[i + 1..].to_string();
+                }
+            }
+        }
+        return String::new();
+    }
+
+    if let Some(idx) = chunk.find("{\"emotion\"") {
+        let before = &chunk[..idx];
+        let after = &chunk[idx..];
+        for (i, ch) in after.char_indices() {
+            if ch == '{' { *depth += 1; }
+            if ch == '}' {
+                *depth -= 1;
+                if *depth == 0 {
+                    return format!("{}{}", before.trim_end(), &after[i + 1..]);
+                }
+            }
+        }
+        return before.trim_end().to_string();
+    }
+
+    chunk.to_string()
 }

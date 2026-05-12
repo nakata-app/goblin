@@ -11,6 +11,7 @@ import { InputBar } from './components/InputBar';
 import { RightTabs } from './components/RightTabs';
 import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
+import { ConfigPanel } from './components/ConfigPanel';
 import { Sidebar } from './components/Sidebar';
 import { SessionPicker } from './components/SessionPicker';
 import type { GoblinState } from './types';
@@ -25,6 +26,7 @@ const GOBLIN_STATE_TEXT: Record<GoblinState, string> = {
   running: 'Running...',
   error: 'Error!',
   success: 'Done!',
+  streaming: 'Streaming...',
 };
 
 function App() {
@@ -68,11 +70,13 @@ function App() {
 
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
 
   // Fetch sessions on mount and show picker if there are recent ones
   useEffect(() => {
     fetchSessions().then(() => {
+      useChatStore.getState().fetchTasks();
       const recent = useSessionStore.getState().sessions.filter(s => s.messageCount > 0);
       if (recent.length > 0) {
         setShowSessionPicker(true);
@@ -149,6 +153,7 @@ function App() {
       setRightPanel('');
       useChatStore.getState().clearThinking();
       useChatStore.getState().clearTasks();
+      useChatStore.getState().fetchTasks();
       useAgentStore.getState().reset();
     } catch (err) {
       console.error('New session failed:', err);
@@ -165,6 +170,7 @@ function App() {
       setRightPanel('');
       useChatStore.getState().clearThinking();
       useChatStore.getState().clearTasks();
+      useChatStore.getState().fetchTasks();
       useAgentStore.getState().reset();
 
       if (data.messages && data.messages.length > 0) {
@@ -283,6 +289,11 @@ function App() {
 
       {cmdOpen && <CommandPalette onCommand={handleCommand} onClose={() => setCmdOpen(false)} />}
 
+      <ConfigPanel
+        isOpen={configOpen}
+        onToggle={() => setConfigOpen((v) => !v)}
+      />
+
       {showSessionPicker && (
         <SessionPicker
           sessions={sessions}
@@ -299,6 +310,7 @@ function App() {
           <div className="panel-header-actions">
             <button className="header-btn" onClick={() => setSidebarOpen(true)}>sessions</button>
             <button className="header-btn" onClick={() => setCmdOpen(true)}>⌘K</button>
+            <button className="header-btn" onClick={() => setConfigOpen(true)} title="Settings">⚙</button>
             <button className="header-btn" onClick={() => clearConversation()}>clear</button>
             <button className="header-btn" onClick={handleNewSession}>new</button>
           </div>

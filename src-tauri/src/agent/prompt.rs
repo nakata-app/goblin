@@ -28,11 +28,6 @@ pub fn build_system_prompt(
 
     // Variety
     parts.push("IMPORTANT: When greeting the user at conversation start, vary your opening. Never repeat the same greeting twice. Be creative within 1-2 lines.".to_string());
-    parts.push("".to_string());
-
-    // Emotion output — minimal, functional
-    parts.push("At the end of every response, include a JSON block for character expression:".to_string());
-    parts.push("{\"emotion\":{\"primary\":\"focused|frustrated|curious|satisfied|tired|excited|concerned|playful|proud|surprised|neutral\",\"secondary\":null,\"intensity\":0.5},\"behavior\":{\"engagement\":\"supportive|analytical|empathetic|celebratory|concerned|playful|neutral\",\"energy\":0.5},\"animation_intent\":{\"posture\":\"upright|lean_forward|lean_back|tilt_left|tilt_right\",\"eye_focus\":\"user|code|terminal|thinking\"}}".to_string());
 
     if let Some(ctx) = project_context {
         parts.push(format!("\n## Project Context\n{}", ctx));

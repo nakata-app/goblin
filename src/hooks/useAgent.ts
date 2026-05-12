@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { useChatStore } from '../stores/chatStore';
+import { useChatStore, persistTask, persistClearTasks } from '../stores/chatStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useCharacterStore } from '../stores/characterStore';
 import { extractLLMEmotion, llmOutputToTargets } from '../character/LLMInterpreter';
@@ -41,6 +41,7 @@ interface ProgressPayload {
   reasoning?: string;
   tools?: string[];
   has_tool_calls?: boolean;
+  chunk?: string;
 }
 
 const TOOL_EVENT_MAP: Record<string, string> = {
@@ -58,41 +59,31 @@ const TOOL_EVENT_MAP: Record<string, string> = {
 };
 
 function stripEmotionJSON(text: string): string {
-  // Remove fenced code blocks containing emotion JSON
   let out = text.replace(/```json\s*[\s\S]*?```\n?/g, '');
-
-  // Find emotion JSON object with bracket counting (handles nested braces)
   const emotionIdx = out.indexOf('{"emotion"');
   if (emotionIdx === -1) return out.trim();
-
   let depth = 0;
   let end = -1;
   for (let i = emotionIdx; i < out.length; i++) {
     if (out[i] === '{') depth++;
     if (out[i] === '}') {
       depth--;
-      if (depth === 0) {
-        end = i + 1;
-        break;
-      }
+      if (depth === 0) { end = i + 1; break; }
     }
   }
-
   if (end === -1) return out.trim();
-
   try {
     const candidate = out.substring(emotionIdx, end);
     JSON.parse(candidate);
     out = out.substring(0, emotionIdx) + out.substring(end);
-  } catch {
-    // Not valid JSON, leave as is
-  }
-
+  } catch { /* not valid JSON, leave as is */ }
   return out.trim();
 }
 
 export function useAgent() {
   const addMessage = useChatStore((s) => s.addMessage);
+  const appendContent = useChatStore((s) => s.appendContent);
+  const setMessageContent = useChatStore((s) => s.setMessageContent);
   const markMessageSent = useChatStore((s) => s.markMessageSent);
   const setRightPanel = useChatStore((s) => s.setRightPanel);
   const clearMessages = useChatStore((s) => s.clearMessages);
@@ -115,6 +106,8 @@ export function useAgent() {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendingRef = useRef(false);
   const queueRef = useRef<{ text: string; msgId: string } | null>(null);
+  const streamingMsgIdRef = useRef<string | null>(null);
+  const streamingContentRef = useRef<string>('');
 
   const processSend = useCallback(
     async (text: string, existingMsgId?: string) => {
@@ -135,6 +128,7 @@ export function useAgent() {
       incrementTurn();
       clearThinking();
       clearTasks();
+      persistClearTasks();
       clearDecisions();
 
       // Force React to flush state updates synchronously before the async invoke.
@@ -142,6 +136,9 @@ export function useAgent() {
       await new Promise<void>(r => {
         requestAnimationFrame(() => requestAnimationFrame(() => r()));
       });
+
+      streamingMsgIdRef.current = null;
+      streamingContentRef.current = '';
 
       // Listen for real-time progress events from the Rust backend
       const progressUnlisten = await listen<ProgressPayload>('agent-progress', (event) => {
@@ -151,13 +148,44 @@ export function useAgent() {
           case 'round':
             setRightPanel(`[Round ${p.round}/${p.max}]${current ? '\n' + current : ''}`);
             break;
-          case 'tool_start':
-            upsertTask({ id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: 'running' });
+          case 'content_chunk': {
+            const rawChunk = p.chunk ?? '';
+            streamingContentRef.current += rawChunk;
+            // Strip emotion JSON from accumulated content and replace display
+            const clean = stripEmotionJSON(streamingContentRef.current);
+            if (!streamingMsgIdRef.current) {
+              const streamMsg: Message = {
+                id: generateId(),
+                role: 'assistant',
+                content: clean,
+                timestamp: Date.now(),
+              };
+              streamingMsgIdRef.current = streamMsg.id;
+              addMessage(streamMsg);
+              setGoblinState('streaming');
+            } else {
+              setMessageContent(streamingMsgIdRef.current, clean);
+            }
+            break;
+          }
+          case 'reasoning_chunk': {
+            const chunk = p.chunk ?? '';
+            useChatStore.getState().appendThinking(chunk);
+            break;
+          }
+          case 'tool_start': {
+            const t = { id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: 'running' as const };
+            upsertTask(t);
+            persistTask(t);
             setRightPanel(`[TOOL] ${p.tool}(${p.args ?? ''})${current ? '\n' + current : ''}`);
             break;
-          case 'tool_end':
-            upsertTask({ id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: p.success ? 'done' : 'error' });
+          }
+          case 'tool_end': {
+            const t = { id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: (p.success ? 'done' : 'error') as 'done' | 'error' };
+            upsertTask(t);
+            persistTask(t);
             break;
+          }
           case 'thinking':
             setGoblinState('thinking');
             break;
@@ -189,15 +217,20 @@ export function useAgent() {
 
         const displayContent = stripEmotionJSON(response.content);
 
-        const assistantMsg: Message = {
-          id: generateId(),
-          role: 'assistant',
-          content: displayContent,
-          timestamp: Date.now(),
-          toolCalls: response.tool_calls ?? [],
-        };
-
-        addMessage(assistantMsg);
+        if (streamingMsgIdRef.current) {
+          setMessageContent(streamingMsgIdRef.current, displayContent);
+          streamingMsgIdRef.current = null;
+          streamingContentRef.current = '';
+        } else {
+          const assistantMsg: Message = {
+            id: generateId(),
+            role: 'assistant',
+            content: displayContent,
+            timestamp: Date.now(),
+            toolCalls: response.tool_calls ?? [],
+          };
+          addMessage(assistantMsg);
+        }
 
         const ti = response.tokens_in ?? 0;
         const to = response.tokens_out ?? 0;
@@ -242,7 +275,9 @@ export function useAgent() {
 
           for (const tc of response.tool_calls) {
             const toolName = tc.function?.name ?? '';
-            upsertTask({ id: tc.id ?? generateId(), name: toolName, status: 'running' });
+            const t = { id: tc.id ?? generateId(), name: toolName, status: 'running' as const };
+            upsertTask(t);
+            persistTask(t);
             const eventType = (TOOL_EVENT_MAP[toolName] ?? 'agent.tool.other') as CharacterEventType;
             emitEvent(eventType, { tool: toolName });
           }
@@ -278,6 +313,8 @@ export function useAgent() {
     },
     [
       addMessage,
+      appendContent,
+      setMessageContent,
       markMessageSent,
       setRightPanel,
       addCost,

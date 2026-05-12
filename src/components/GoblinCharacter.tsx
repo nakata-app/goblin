@@ -18,6 +18,7 @@ export const STATE_EMOJI: Record<GoblinState, string> = {
   running: '⚡',
   error: '😱',
   success: '😎',
+  streaming: '📡',
 };
 
 interface GoblinCharacterProps {

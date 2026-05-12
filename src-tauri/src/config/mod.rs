@@ -27,6 +27,8 @@ pub struct ProvidersConfig {
     pub generic: Vec<GenericConfig>,
     #[serde(default)]
     pub auto_route: AutoRouteConfig,
+    #[serde(default)]
+    pub multi_agent: MultiAgentConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +138,83 @@ impl Default for AutoRouteConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiAgentConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub agents: Vec<AgentProfile>,
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u32,
+    #[serde(default = "default_max_children")]
+    pub max_children: u32,
+}
+
+impl Default for MultiAgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agents: vec![],
+            max_depth: default_max_depth(),
+            max_children: default_max_children(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentProfile {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub blocked_tools: Vec<String>,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sandbox: bool,
+}
+
+fn default_max_depth() -> u32 { 3 }
+fn default_max_children() -> u32 { 5 }
+fn default_true() -> bool { true }
+
+impl Config {
+    pub fn route_to_agent(&self, user_message: &str) -> Option<&AgentProfile> {
+        if !self.providers.multi_agent.enabled || self.providers.multi_agent.agents.is_empty() {
+            return None;
+        }
+
+        let msg_lower = user_message.to_lowercase();
+
+        // Find first matching agent by trigger keywords
+        for agent in &self.providers.multi_agent.agents {
+            if !agent.enabled {
+                continue;
+            }
+            for trigger in &agent.triggers {
+                if msg_lower.contains(&trigger.to_lowercase()) {
+                    return Some(agent);
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn get_agent_profile(&self, name: &str) -> Option<&AgentProfile> {
+        self.providers.multi_agent.agents.iter().find(|a| a.name == name)
+    }
+}
+
 fn default_fast_model() -> String {
     "deepseek-v4-flash".to_string()
 }
@@ -207,7 +286,39 @@ pub struct MemoryConfig {
     pub max_observations: u32,
     #[serde(default)]
     pub auto_compact_days: u32,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_embedding_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_embedding_base")]
+    pub base_url: String,
+    #[serde(default = "default_embedding_model")]
+    pub model: String,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_embedding_provider(),
+            api_key: None,
+            base_url: default_embedding_base(),
+            model: default_embedding_model(),
+        }
+    }
+}
+
+fn default_embedding_provider() -> String { "openai".to_string() }
+fn default_embedding_base() -> String { "https://api.openai.com/v1".to_string() }
+fn default_embedding_model() -> String { "text-embedding-3-small".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SttConfig {
@@ -306,6 +417,7 @@ impl Config {
                 glm: None,
                 generic: vec![],
                 auto_route: AutoRouteConfig::default(),
+                multi_agent: MultiAgentConfig::default(),
             },
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
@@ -409,6 +521,16 @@ impl Config {
             }
         }
     }
+
+    pub fn config_path() -> PathBuf {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut p = PathBuf::from(home);
+            p.push(".goblin");
+            p.push("config.toml");
+            return p;
+        }
+        PathBuf::from("config.toml")
+    }
 }
 
 fn dirs_next() -> Option<PathBuf> {
@@ -444,6 +566,7 @@ mod tests {
                     strong_model: "deepseek-v4-pro".into(),
                     vision_model: Some("llama-vision".into()),
                 },
+                multi_agent: MultiAgentConfig::default(),
             },
             agent: AgentConfig {
                 default_model: "deepseek-v4-pro".into(),
@@ -467,6 +590,7 @@ mod tests {
                 openai: None, anthropic: None, nvidia: None, gemini: None, glm: None,
                 generic: vec![],
                 auto_route: AutoRouteConfig::default(),
+                multi_agent: MultiAgentConfig::default(),
             },
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),

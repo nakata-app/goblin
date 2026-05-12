@@ -65,6 +65,18 @@ pub trait Provider: Send + Sync {
         tools: &[ToolDefinition],
         model: &str,
     ) -> Result<ProviderResponse, String>;
+
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        on_chunk: Box<dyn Fn(String) + Send>,
+        on_reasoning: Box<dyn Fn(String) + Send>,
+    ) -> Result<ProviderResponse, String> {
+        let _ = (messages, tools, model, on_chunk, on_reasoning);
+        Err("Streaming not supported by this provider".to_string())
+    }
 }
 
 #[allow(dead_code)]
