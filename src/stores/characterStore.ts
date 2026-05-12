@@ -89,6 +89,33 @@ export const useCharacterStore = create<CharacterStoreState>((set, get) => {
     behaviorOrchestrator.processEvent(event);
     cognitiveEngine.feed(event);
 
+    // Force animation state based on tool category from decision events
+    if (event.type === ('agent.decision' as never) && event.payload) {
+      const tools = (event.payload.tools as string[]) ?? [];
+      for (const t of tools) {
+        if (t === 'read_file' || t === 'grep' || t === 'glob') {
+          get().animationDirector.forceState('reading_scan');
+          break;
+        }
+        if (t === 'write_file' || t === 'edit_file' || t === 'multi_edit') {
+          get().animationDirector.forceState('writing_focused');
+          break;
+        }
+        if (t === 'bash') {
+          get().animationDirector.forceState('running_active');
+          break;
+        }
+        if (t.startsWith('web_search') || t === 'web_fetch') {
+          get().animationDirector.forceState('searching_explore');
+          break;
+        }
+        if (t.startsWith('browser_')) {
+          get().animationDirector.forceState('searching_explore');
+          break;
+        }
+      }
+    }
+
     // Apply cognitive insights to emotions
     const cs = cognitiveEngine.snapshot();
     const engine = emotionalEngine;

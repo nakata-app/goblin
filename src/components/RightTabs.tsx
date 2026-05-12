@@ -6,7 +6,6 @@ import type { RightTab } from '../stores/chatStore';
 const TABS: { key: RightTab; label: string }[] = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'thinking', label: 'Thinking' },
-  { key: 'behavior', label: 'Behavior' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'output', label: 'Output' },
   { key: 'help', label: 'Help' },
@@ -57,7 +56,6 @@ export function RightTabs() {
   const tasks = useChatStore((s) => s.tasks);
   const rightPanelContent = useChatStore((s) => s.rightPanelContent);
   const diffContent = useChatStore((s) => s.diffContent);
-  const decisions = useChatStore((s) => s.decisions);
 
   const goblinState = useAgentStore((s) => s.goblinState);
   const model = useAgentStore((s) => s.model);
@@ -93,43 +91,6 @@ export function RightTabs() {
             <div className="output-rendered" dangerouslySetInnerHTML={{ __html: renderMarkdown(thinkingContent) }} />
           ) : (
             <div className="tab-content-empty">No reasoning yet. Send a message to see the model's thinking.</div>
-          )
-        )}
-
-        {activeTab === 'behavior' && (
-          decisions.length === 0 ? (
-            <div className="tab-content-empty">
-              <div className="output-empty-icon">🧠</div>
-              <div>No decisions yet</div>
-              <div className="output-empty-hint">Model decisions & tool choices appear here</div>
-            </div>
-          ) : (
-            <div className="behavior-timeline">
-              {decisions.map((d) => (
-                <div key={d.round} className="decision-card">
-                  <div className="decision-header">
-                    <span className="decision-round">Round {d.round}</span>
-                    <span className={`decision-badge ${d.tools_chosen.length > 0 ? 'decision-tools' : 'decision-response'}`}>
-                      {d.tools_chosen.length > 0 ? `${d.tools_chosen.length} tools` : 'response'}
-                    </span>
-                  </div>
-                  <div className="decision-tools-list">
-                    {d.tools_chosen.map((t) => (
-                      <span key={t} className="decision-tool-tag">{t}</span>
-                    ))}
-                    {d.tools_chosen.length === 0 && (
-                      <span className="decision-tool-tag decision-no-tools">no tools - direct response</span>
-                    )}
-                  </div>
-                  {d.reasoning && (
-                    <details className="decision-reasoning">
-                      <summary className="decision-reasoning-toggle">reasoning</summary>
-                      <div className="decision-reasoning-text">{d.reasoning}</div>
-                    </details>
-                  )}
-                </div>
-              ))}
-            </div>
           )
         )}
 

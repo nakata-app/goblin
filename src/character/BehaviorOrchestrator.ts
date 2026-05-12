@@ -48,6 +48,7 @@ export const DEFAULT_EVENT_RESPONSES: Record<CharacterEventType, Partial<Emotion
   'agent.error.occurred':      { frustration: 0.5, focus: -0.2, satisfaction: -0.3, energy: -0.2 },
   'agent.error.repeated':      { frustration: 0.8, energy: -0.3, satisfaction: -0.5 },
   'agent.success':             { satisfaction: 0.7, energy: 0.2, frustration: -0.5 },
+  'agent.decision':            { focus: 0.0, energy: 0.0, curiosity: 0.0 },  // payload-driven, see processEvent
 
   // --- Build ---
   'build.failed':              { frustration: 0.6, focus: -0.2, satisfaction: -0.3 },
@@ -86,6 +87,7 @@ const EVENT_PRIORITIES: Record<CharacterEventType, number> = {
   'agent.error.occurred': 60,
   'agent.error.repeated': 80,
   'agent.success': 50,
+  'agent.decision': 35,
   'build.failed': 55,
   'build.succeeded': 40,
   'session.started': 35,
@@ -120,7 +122,51 @@ export class BehaviorOrchestrator {
     const weight = this.config.personalityWeight;
     const now = Date.now();
 
-    for (const [dim, value] of Object.entries(response) as [EmotionName, number][]) {
+    // Decision events: extract behavior patterns from payload
+    let deltas: Partial<EmotionVector> = { ...response };
+    if (event.type === 'agent.decision' && event.payload) {
+      const tools = (event.payload.tools as string[]) ?? [];
+      const toolCount = tools.length;
+      const hasReasoning = !!(event.payload.has_reasoning);
+
+      // Tool density → energy and focus
+      if (toolCount >= 4) {
+        deltas.energy = (deltas.energy ?? 0) + 0.5;
+        deltas.focus = (deltas.focus ?? 0) + 0.6;
+      } else if (toolCount >= 2) {
+        deltas.energy = (deltas.energy ?? 0) + 0.3;
+        deltas.focus = (deltas.focus ?? 0) + 0.5;
+      } else if (toolCount === 0) {
+        // Direct response — satisfied, calm
+        deltas.satisfaction = (deltas.satisfaction ?? 0) + 0.3;
+        deltas.focus = (deltas.focus ?? 0) - 0.2;
+      } else {
+        deltas.focus = (deltas.focus ?? 0) + 0.4;
+      }
+
+      // Tool category → specific emotions
+      for (const t of tools) {
+        if (t.startsWith('web_')) { deltas.curiosity = (deltas.curiosity ?? 0) + 0.15; }
+        if (t === 'read_file' || t === 'grep' || t === 'glob') { deltas.curiosity = (deltas.curiosity ?? 0) + 0.1; }
+        if (t === 'write_file' || t === 'edit_file' || t === 'multi_edit') { deltas.satisfaction = (deltas.satisfaction ?? 0) + 0.05; }
+        if (t === 'bash') { deltas.focus = (deltas.focus ?? 0) + 0.1; deltas.energy = (deltas.energy ?? 0) + 0.05; }
+        if (t.includes('git')) { deltas.satisfaction = (deltas.satisfaction ?? 0) + 0.05; }
+      }
+
+      // Tool diversity → curiosity
+      const uniqueTools = new Set(tools).size;
+      if (uniqueTools >= 3) { deltas.curiosity = (deltas.curiosity ?? 0) + 0.2; }
+
+      // Deep reasoning → contemplative
+      if (hasReasoning) { deltas.curiosity = (deltas.curiosity ?? 0) + 0.15; }
+
+      // Clamp deltas
+      for (const k of Object.keys(deltas) as EmotionName[]) {
+        deltas[k] = Math.max(-1, Math.min(1, deltas[k] ?? 0));
+      }
+    }
+
+    for (const [dim, value] of Object.entries(deltas) as [EmotionName, number][]) {
       const scaled = value * weight;
 
       // If LLM output is active, event-driven values are blended in at lower weight

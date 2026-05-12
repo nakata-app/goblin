@@ -139,6 +139,7 @@ export type CharacterEventType =
   | 'agent.error.occurred'
   | 'agent.error.repeated'
   | 'agent.success'
+  | 'agent.decision'
   | 'build.failed'
   | 'build.succeeded'
   | 'session.started'

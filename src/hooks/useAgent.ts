@@ -102,7 +102,6 @@ export function useAgent() {
   const clearTasks = useChatStore((s) => s.clearTasks);
   const addDecision = useChatStore((s) => s.addDecision);
   const clearDecisions = useChatStore((s) => s.clearDecisions);
-  const setActiveTab = useChatStore((s) => s.setActiveTab);
   const setModel = useAgentStore((s) => s.setModel);
   const setGoblinState = useAgentStore((s) => s.setGoblinState);
   const model = useAgentStore((s) => s.model);
@@ -167,11 +166,14 @@ export function useAgent() {
             setError(p.error as string);
             break;
           case 'decision':
-            setActiveTab('behavior');
             addDecision({
               round: (p.round ?? 0),
               reasoning: (p.reasoning ?? ''),
               tools_chosen: (p.tools ?? []),
+            });
+            emitEvent('agent.decision' as CharacterEventType, {
+              tools: p.tools ?? [],
+              has_reasoning: !!(p.reasoning),
             });
             break;
         }
@@ -277,7 +279,6 @@ export function useAgent() {
     [
       addMessage,
       markMessageSent,
-      setActiveTab,
       setRightPanel,
       addCost,
       incrementTurn,

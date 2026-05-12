@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Message } from '../types';
 
-export type RightTab = 'dashboard' | 'thinking' | 'tasks' | 'output' | 'behavior' | 'help';
+export type RightTab = 'dashboard' | 'thinking' | 'tasks' | 'output' | 'help';
 
 export interface TaskEntry {
   id: string;
