@@ -19,6 +19,25 @@ interface ConfigData {
   memory: MemorySettings;
   stt: SttSettings;
   tts: TtsSettings;
+  mnemonics: MnemonicsSettings;
+  mcp: McpSettings;
+}
+
+interface MnemonicsSettings {
+  enabled: boolean;
+  binary: string;
+  default_ns: string;
+}
+
+interface McpServerEntry {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+}
+
+interface McpSettings {
+  servers: Record<string, McpServerEntry>;
 }
 
 interface AgentProfile {
@@ -116,7 +135,7 @@ interface TtsSettings {
   voice: string;
 }
 
-type TabId = 'providers' | 'agent' | 'multi-agent' | 'memory' | 'tts-stt';
+type TabId = 'providers' | 'agent' | 'multi-agent' | 'memory' | 'tts-stt' | 'mnemonics' | 'mcp' | 'plugins';
 
 interface TestResult {
   success: boolean;
@@ -142,6 +161,9 @@ const TAB_LABELS: Record<TabId, string> = {
   'multi-agent': 'Multi-Agent',
   memory: 'Memory',
   'tts-stt': 'TTS / STT',
+  mnemonics: 'Mnemonics',
+  mcp: 'MCP Servers',
+  plugins: 'Plugins',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -169,6 +191,8 @@ function defaultConfig(): ConfigData {
     memory: { max_observations: 5000, auto_compact_days: 30, embedding: { enabled: false, provider: 'openai', api_key: null, base_url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' } },
     stt: { provider: 'none', api_key: null, base_url: 'https://api.openai.com/v1', model: 'whisper-1' },
     tts: { provider: 'macos', api_key: null, base_url: 'https://api.openai.com/v1', model: 'tts-1', voice: 'alloy' },
+    mnemonics: { enabled: true, binary: 'mnemonics', default_ns: 'proj:goblin' },
+    mcp: { servers: {} },
   };
 }
 
@@ -212,6 +236,15 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
           },
           stt: { ...d.stt, ...(cfg as unknown as unknown as Record<string, unknown>).stt as object },
           tts: { ...d.tts, ...(cfg as unknown as unknown as Record<string, unknown>).tts as object },
+          mnemonics: { ...d.mnemonics, ...(cfg as unknown as unknown as Record<string, unknown>).mnemonics as object },
+          mcp: {
+            ...d.mcp,
+            ...(cfg as unknown as unknown as Record<string, unknown>).mcp as object,
+            servers: {
+              ...d.mcp.servers,
+              ...(((cfg as unknown as unknown as Record<string, unknown>).mcp as unknown as Record<string, unknown>)?.servers as Record<string, McpServerEntry> ?? {}),
+            },
+          },
         };
         setConfig(merged);
       })
@@ -728,6 +761,39 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
               </label>
             </div>
           )}
+
+          {/* ═══ Mnemonics ═══ */}
+          {activeTab === 'mnemonics' && (
+            <div className="config-section">
+              <p className="config-section-desc">
+                Cross-project semantic memory via Atakan's `mnemonics` binary. Goblin auto-detects
+                the binary at boot; if it is missing the agent simply loses the
+                <code> mnemonics_retrieve</code> / <code> mnemonics_ingest</code> tools.
+              </p>
+              <label className="config-row">
+                <span>Enabled</span>
+                <input type="checkbox" checked={config.mnemonics.enabled} onChange={(e) => setConfig((c) => ({ ...c, mnemonics: { ...c.mnemonics, enabled: e.target.checked } }))} />
+              </label>
+              <label className="config-row">
+                <span>Binary</span>
+                <input className="config-input" value={config.mnemonics.binary} placeholder="mnemonics" onChange={(e) => setConfig((c) => ({ ...c, mnemonics: { ...c.mnemonics, binary: e.target.value } }))} />
+              </label>
+              <label className="config-row">
+                <span>Default namespace</span>
+                <input className="config-input" value={config.mnemonics.default_ns} placeholder="proj:goblin" onChange={(e) => setConfig((c) => ({ ...c, mnemonics: { ...c.mnemonics, default_ns: e.target.value } }))} />
+              </label>
+            </div>
+          )}
+
+          {/* ═══ MCP Servers ═══ */}
+          {activeTab === 'mcp' && (
+            <McpServersEditor servers={config.mcp.servers} onChange={(servers) => setConfig((c) => ({ ...c, mcp: { ...c.mcp, servers } }))} />
+          )}
+
+          {/* ═══ Plugins ═══ */}
+          {activeTab === 'plugins' && (
+            <PluginsEditor />
+          )}
         </div>
 
         {/* Footer */}
@@ -739,5 +805,180 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
         </div>
       </div>
     </>
+  );
+}
+
+/* ── MCP servers editor ── */
+
+function McpServersEditor({
+  servers,
+  onChange,
+}: {
+  servers: Record<string, McpServerEntry>;
+  onChange: (servers: Record<string, McpServerEntry>) => void;
+}) {
+  const [newName, setNewName] = useState('');
+
+  const addServer = () => {
+    const name = newName.trim();
+    if (!name || servers[name]) return;
+    onChange({
+      ...servers,
+      [name]: { command: '', args: [], env: {}, enabled: true },
+    });
+    setNewName('');
+  };
+
+  const removeServer = (name: string) => {
+    const next = { ...servers };
+    delete next[name];
+    onChange(next);
+  };
+
+  const updateServer = (name: string, patch: Partial<McpServerEntry>) => {
+    onChange({ ...servers, [name]: { ...servers[name], ...patch } });
+  };
+
+  const entries = Object.entries(servers);
+
+  return (
+    <div className="config-section">
+      <p className="config-section-desc">
+        MCP servers auto-boot on launch and expose their tools to the agent via
+        <code> mcp_servers</code> / <code> mcp_tools</code> / <code> mcp_call</code>. Use the same
+        shape as Claude Code: <code>command</code>, <code>args</code>, optional <code>env</code>.
+      </p>
+
+      <div className="config-row">
+        <input
+          className="config-input"
+          placeholder="new server name (e.g. github)"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') addServer(); }}
+        />
+        <button className="config-btn config-btn-sm" onClick={addServer}>Add</button>
+      </div>
+
+      {entries.length === 0 && <p className="config-section-desc">No MCP servers configured.</p>}
+
+      {entries.map(([name, srv]) => (
+        <div key={name} className="config-provider-card">
+          <div className="config-provider-header">
+            <h4 className="config-provider-name">{name}</h4>
+            <div className="config-provider-actions">
+              <label className="config-row" style={{ margin: 0 }}>
+                <span>Enabled</span>
+                <input type="checkbox" checked={srv.enabled} onChange={(e) => updateServer(name, { enabled: e.target.checked })} />
+              </label>
+              <button className="config-btn-sm config-btn-danger" onClick={() => removeServer(name)}>Remove</button>
+            </div>
+          </div>
+          <label className="config-row">
+            <span>Command</span>
+            <input className="config-input" placeholder="/path/to/bin or npx" value={srv.command} onChange={(e) => updateServer(name, { command: e.target.value })} />
+          </label>
+          <label className="config-row">
+            <span>Args (one per line)</span>
+            <textarea
+              className="config-input"
+              rows={3}
+              value={srv.args.join('\n')}
+              onChange={(e) => updateServer(name, { args: e.target.value.split('\n').filter((s) => s.length > 0) })}
+            />
+          </label>
+          <label className="config-row">
+            <span>Env (KEY=value per line)</span>
+            <textarea
+              className="config-input"
+              rows={3}
+              value={Object.entries(srv.env).map(([k, v]) => `${k}=${v}`).join('\n')}
+              onChange={(e) => {
+                const next: Record<string, string> = {};
+                for (const line of e.target.value.split('\n')) {
+                  const idx = line.indexOf('=');
+                  if (idx > 0) next[line.slice(0, idx).trim()] = line.slice(idx + 1);
+                }
+                updateServer(name, { env: next });
+              }}
+            />
+          </label>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Wasm plugins editor ── */
+
+function PluginsEditor() {
+  const [plugins, setPlugins] = useState<string[]>([]);
+  const [status, setStatus] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await invoke<string[]>('plugin_list');
+      setPlugins(list);
+    } catch (e) {
+      setStatus(`Error: ${e}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const name = file.name.replace(/\.wasm$/i, '');
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buf));
+      await invoke('plugin_install', { name, wasmBytes: bytes });
+      setStatus(`Installed: ${name}`);
+      refresh();
+    } catch (err) {
+      setStatus(`Install failed: ${err}`);
+    }
+  };
+
+  const uninstall = async (name: string) => {
+    try {
+      await invoke('plugin_uninstall', { name });
+      setStatus(`Uninstalled: ${name}`);
+      refresh();
+    } catch (err) {
+      setStatus(`Uninstall failed: ${err}`);
+    }
+  };
+
+  return (
+    <div className="config-section">
+      <p className="config-section-desc">
+        Wasm plugins extend the agent with sandboxed code. Plugins have no
+        filesystem, network, or syscall access and are fuel-limited so they
+        cannot hang. Files install to <code>~/.goblin/plugins/</code>.
+      </p>
+      <label className="config-row">
+        <span>Install .wasm</span>
+        <input type="file" accept=".wasm" onChange={onFile} />
+      </label>
+      <button className="config-btn config-btn-sm" disabled={loading} onClick={refresh}>
+        {loading ? 'Refreshing...' : 'Refresh'}
+      </button>
+      {status && <p className="config-saved">{status}</p>}
+      {plugins.length === 0 && <p className="config-section-desc">No plugins installed.</p>}
+      {plugins.map((name) => (
+        <div key={name} className="config-provider-card">
+          <div className="config-provider-header">
+            <h4 className="config-provider-name">{name}</h4>
+            <button className="config-btn-sm config-btn-danger" onClick={() => uninstall(name)}>Uninstall</button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
