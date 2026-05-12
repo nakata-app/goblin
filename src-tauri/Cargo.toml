@@ -30,3 +30,4 @@ glob = "0.3"
 urlencoding = "2"
 base64 = "0.22"
 headless_chrome = "1"
+wasmtime = { version = "38", default-features = false, features = ["cranelift", "runtime", "wat"] }

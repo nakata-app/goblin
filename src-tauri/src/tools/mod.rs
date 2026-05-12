@@ -77,6 +77,7 @@ pub fn create_tool_registry(
     task_store: TaskStore,
     whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>,
     mnemonics: Option<std::sync::Arc<crate::mnemonics::MnemonicsClient>>,
+    plugins: std::sync::Arc<crate::plugin::PluginRegistry>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
@@ -340,6 +341,69 @@ pub fn create_tool_registry(
                 },
             );
         }
+    }
+
+    // Wasm plugin tools. Two tools instead of one so the LLM can discover
+    // what's installed before deciding to call something. Always exposed
+    // because the registry is always present; `plugin_list` just returns
+    // an empty list if no plugins are installed.
+    {
+        let plugins = plugins.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "plugin_list".to_string(),
+                    description: "List Wasm plugins installed for this Goblin instance. Plugins live in ~/.goblin/plugins/ and are sandboxed (no fs, no network, fuel-limited).".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }),
+                },
+            },
+            move |_args| {
+                let plugins = plugins.clone();
+                Box::pin(async move {
+                    let list = plugins.list();
+                    if list.is_empty() {
+                        Ok("No plugins installed.".to_string())
+                    } else {
+                        Ok(format!("Installed plugins ({}): {}", list.len(), list.join(", ")))
+                    }
+                })
+            },
+        );
+    }
+    {
+        let plugins = plugins.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "plugin_run".to_string(),
+                    description: "Invoke a Wasm plugin with a UTF-8 string input. Plugin runs in a sandbox: no network, no filesystem, fuel-limited so it cannot hang. Use `plugin_list` first to discover what's available.".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Plugin name (matches a file under ~/.goblin/plugins/)" },
+                            "input": { "type": "string", "description": "UTF-8 input to pass to the plugin" }
+                        },
+                        "required": ["name", "input"]
+                    }),
+                },
+            },
+            move |args| {
+                let plugins = plugins.clone();
+                Box::pin(async move {
+                    let name = args["name"].as_str().ok_or("Missing 'name' parameter")?.to_string();
+                    let input = args["input"].as_str().ok_or("Missing 'input' parameter")?.to_string();
+                    tokio::task::spawn_blocking(move || plugins.run(&name, &input))
+                        .await
+                        .map_err(|e| format!("Plugin task panicked: {}", e))?
+                })
+            },
+        );
     }
 
     registry

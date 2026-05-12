@@ -9,6 +9,7 @@ mod task;
 mod tools;
 mod whatsapp;
 mod mnemonics;
+mod plugin;
 
 use agent::r#loop::AgentLoop;
 use crate::config::Config;
@@ -25,6 +26,7 @@ use tools::ToolRegistry;
 use tools::mcp_server::McpServerHandle;
 use whatsapp::WhatsappBridge;
 use mnemonics::MnemonicsClient;
+use plugin::PluginRegistry;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
 use std::sync::Arc;
@@ -43,6 +45,7 @@ struct AppState {
     task_store: TaskStore,
     whatsapp: Arc<WhatsappBridge>,
     mnemonics: Option<Arc<MnemonicsClient>>,
+    plugins: Arc<PluginRegistry>,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -582,6 +585,7 @@ async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> 
             state.task_store.clone(),
             state.whatsapp.clone(),
             state.mnemonics.clone(),
+            state.plugins.clone(),
         );
         reg.definitions().iter().map(|d| {
             (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
@@ -637,6 +641,7 @@ async fn save_config(
         state.task_store.clone(),
         state.whatsapp.clone(),
         state.mnemonics.clone(),
+        state.plugins.clone(),
     ));
 
     // Update agent in state
@@ -757,6 +762,55 @@ async fn whatsapp_poll(state: State<'_, AppState>) -> Result<Vec<whatsapp::WaMes
     state.whatsapp.poll_messages().await
 }
 
+// ── Wasm Plugin Commands ──
+
+#[tauri::command]
+async fn plugin_list(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(state.plugins.list())
+}
+
+#[tauri::command]
+async fn plugin_run(
+    state: State<'_, AppState>,
+    name: String,
+    input: String,
+) -> Result<String, String> {
+    let plugins = state.plugins.clone();
+    tokio::task::spawn_blocking(move || plugins.run(&name, &input))
+        .await
+        .map_err(|e| format!("Plugin task panicked: {}", e))?
+}
+
+#[tauri::command]
+async fn plugin_install(
+    state: State<'_, AppState>,
+    name: String,
+    wasm_bytes: Vec<u8>,
+) -> Result<(), String> {
+    // Persist to ~/.goblin/plugins/<name>.wasm so the plugin survives a
+    // restart, then register it in the live registry.
+    let plugins_dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".goblin").join("plugins"))
+        .ok_or("HOME not set")?;
+    std::fs::create_dir_all(&plugins_dir)
+        .map_err(|e| format!("Failed to create plugins dir: {}", e))?;
+    let path = plugins_dir.join(format!("{}.wasm", name));
+    std::fs::write(&path, &wasm_bytes)
+        .map_err(|e| format!("Failed to write plugin: {}", e))?;
+    state.plugins.load_bytes(name, &wasm_bytes)
+}
+
+#[tauri::command]
+async fn plugin_uninstall(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    let plugins_dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".goblin").join("plugins"))
+        .ok_or("HOME not set")?;
+    let path = plugins_dir.join(format!("{}.wasm", name));
+    let removed_file = std::fs::remove_file(&path).is_ok();
+    let removed_mem = state.plugins.unload(&name);
+    Ok(removed_file || removed_mem)
+}
+
 async fn cron_scheduler_loop(app: tauri::AppHandle) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -819,6 +873,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
                 state.task_store.clone(),
                 state.whatsapp.clone(),
                 state.mnemonics.clone(),
+                state.plugins.clone(),
             );
 
             if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
@@ -1028,12 +1083,35 @@ pub fn run() {
         None
     };
 
+    // Wasm plugin registry: load anything in ~/.goblin/plugins/ on boot.
+    // Failures are logged inside load_dir; one broken plugin does not
+    // disable the rest.
+    let plugin_registry = Arc::new(
+        PluginRegistry::new().unwrap_or_else(|e| {
+            eprintln!("[plugin] init failed: {} — plugins disabled.", e);
+            // Construction failure should never happen short of an OOM; if
+            // it does we still want a no-op registry rather than crashing
+            // the whole app.
+            PluginRegistry::new().expect("plugin registry init failed twice")
+        })
+    );
+    {
+        let plugins_dir = std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".goblin").join("plugins"))
+            .unwrap_or_else(|| std::path::PathBuf::from(".goblin/plugins"));
+        let loaded = plugin_registry.load_dir(&plugins_dir);
+        if !loaded.is_empty() {
+            println!("[plugin] Loaded {} plugin(s) from {:?}: {}", loaded.len(), plugins_dir, loaded.join(", "));
+        }
+    }
+
     let tool_registry = tools::create_tool_registry(
         config.stt.clone(),
         config.tts.clone(),
         task_store.clone(),
         whatsapp_bridge.clone(),
         mnemonics_client.clone(),
+        plugin_registry.clone(),
     );
     let agent = init_agent(&config, tool_registry);
 
@@ -1072,6 +1150,7 @@ pub fn run() {
             task_store,
             whatsapp: whatsapp_bridge,
             mnemonics: mnemonics_client,
+            plugins: plugin_registry,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -1107,6 +1186,10 @@ pub fn run() {
             whatsapp_status,
             whatsapp_send,
             whatsapp_poll,
+            plugin_list,
+            plugin_run,
+            plugin_install,
+            plugin_uninstall,
         ])
         .setup(|app| {
             // ── System tray daemon ──
@@ -1324,7 +1407,7 @@ mod tests {
         };
 
         let tool_registry = tools::create_tool_registry(
-            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None,
+            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()),
         );
 
         let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
@@ -1410,7 +1493,7 @@ mod tests {
             };
 
             let tool_registry = tools::create_tool_registry(
-                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None,
+                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()),
             );
 
             let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
