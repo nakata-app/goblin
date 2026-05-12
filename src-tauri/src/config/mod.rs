@@ -16,6 +16,28 @@ pub struct Config {
     pub tts: TtsConfig,
     #[serde(default)]
     pub mnemonics: MnemonicsConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// Generic MCP server registration. Same shape as Claude Code's MCP
+/// config so existing entries (`mcp_servers.<name>`) can be copy-pasted
+/// into `[mcp.servers.<name>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// External `mnemonics` binary (cross-project semantic memory). When the
@@ -460,6 +482,7 @@ impl Config {
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
+            mcp: McpConfig::default(),
         })
     }
 
@@ -618,6 +641,7 @@ mod tests {
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 
@@ -635,6 +659,7 @@ mod tests {
             stt: SttConfig::default(),
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 

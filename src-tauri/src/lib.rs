@@ -10,6 +10,7 @@ mod tools;
 mod whatsapp;
 mod mnemonics;
 mod plugin;
+mod mcp;
 
 use agent::r#loop::AgentLoop;
 use crate::config::Config;
@@ -27,6 +28,7 @@ use tools::mcp_server::McpServerHandle;
 use whatsapp::WhatsappBridge;
 use mnemonics::MnemonicsClient;
 use plugin::PluginRegistry;
+use mcp::McpHub;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
 use std::sync::Arc;
@@ -46,6 +48,7 @@ struct AppState {
     whatsapp: Arc<WhatsappBridge>,
     mnemonics: Option<Arc<MnemonicsClient>>,
     plugins: Arc<PluginRegistry>,
+    mcp: Arc<McpHub>,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -586,6 +589,7 @@ async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> 
             state.whatsapp.clone(),
             state.mnemonics.clone(),
             state.plugins.clone(),
+            state.mcp.clone(),
         );
         reg.definitions().iter().map(|d| {
             (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
@@ -642,6 +646,7 @@ async fn save_config(
         state.whatsapp.clone(),
         state.mnemonics.clone(),
         state.plugins.clone(),
+        state.mcp.clone(),
     ));
 
     // Update agent in state
@@ -874,6 +879,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
                 state.whatsapp.clone(),
                 state.mnemonics.clone(),
                 state.plugins.clone(),
+                state.mcp.clone(),
             );
 
             if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
@@ -987,6 +993,7 @@ pub fn run() {
             stt: crate::config::SttConfig::default(),
             tts: crate::config::TtsConfig::default(),
             mnemonics: crate::config::MnemonicsConfig::default(),
+            mcp: crate::config::McpConfig::default(),
         }
     });
 
@@ -1105,6 +1112,11 @@ pub fn run() {
         }
     }
 
+    // Auto-boot every server in [mcp.servers.*]. Failures inside
+    // boot_from_config are logged and skipped so a single broken server
+    // does not kill the agent.
+    let mcp_hub = Arc::new(McpHub::boot_from_config(config.mcp.servers.clone().into_iter()));
+
     let tool_registry = tools::create_tool_registry(
         config.stt.clone(),
         config.tts.clone(),
@@ -1112,6 +1124,7 @@ pub fn run() {
         whatsapp_bridge.clone(),
         mnemonics_client.clone(),
         plugin_registry.clone(),
+        mcp_hub.clone(),
     );
     let agent = init_agent(&config, tool_registry);
 
@@ -1151,6 +1164,7 @@ pub fn run() {
             whatsapp: whatsapp_bridge,
             mnemonics: mnemonics_client,
             plugins: plugin_registry,
+            mcp: mcp_hub,
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -1404,10 +1418,11 @@ mod tests {
             stt: crate::config::SttConfig::default(),
             tts: crate::config::TtsConfig::default(),
             mnemonics: crate::config::MnemonicsConfig::default(),
+            mcp: crate::config::McpConfig::default(),
         };
 
         let tool_registry = tools::create_tool_registry(
-            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()),
+            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
         );
 
         let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
@@ -1490,10 +1505,11 @@ mod tests {
                 stt: crate::config::SttConfig::default(),
                 tts: crate::config::TtsConfig::default(),
                 mnemonics: crate::config::MnemonicsConfig::default(),
+                mcp: crate::config::McpConfig::default(),
             };
 
             let tool_registry = tools::create_tool_registry(
-                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()),
+                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
             );
 
             let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);

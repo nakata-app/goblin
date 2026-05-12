@@ -78,6 +78,7 @@ pub fn create_tool_registry(
     whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>,
     mnemonics: Option<std::sync::Arc<crate::mnemonics::MnemonicsClient>>,
     plugins: std::sync::Arc<crate::plugin::PluginRegistry>,
+    mcp_hub: std::sync::Arc<crate::mcp::McpHub>,
 ) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
@@ -172,10 +173,12 @@ pub fn create_tool_registry(
     registry.register(vault::obsidian_search_def(), vault::handle_obsidian_search);
     registry.register(vault::vault_stats_def(), vault::handle_vault_stats);
 
-    // Faz 9: MCP tools
-    registry.register(mcp::mcp_connect_def(), mcp::handle_mcp_connect);
-    registry.register(mcp::mcp_list_tools_def(), mcp::handle_mcp_list_tools);
-    registry.register(mcp::mcp_call_tool_def(), mcp::handle_mcp_call_tool);
+    // Faz 9 MCP tools: mcp_connect / mcp_list_tools / mcp_call_tool were
+    // stub placeholders that returned help strings; they are replaced by
+    // the auto-boot McpHub plus the `mcp_servers` / `mcp_tools` /
+    // `mcp_call` tools registered further down. `mcp_install` (npm-based
+    // package installation helper) survives because it complements the
+    // new dispatcher rather than duplicating it.
     registry.register(mcp::mcp_install_def(), mcp::handle_mcp_install);
 
     // Faz 9: Skills tools
@@ -401,6 +404,98 @@ pub fn create_tool_registry(
                     tokio::task::spawn_blocking(move || plugins.run(&name, &input))
                         .await
                         .map_err(|e| format!("Plugin task panicked: {}", e))?
+                })
+            },
+        );
+    }
+
+    // Generic MCP dispatcher tools. One per verb (list/call) instead of
+    // one per (server, tool) pair, because static tool registration here
+    // happens before we know what an MCP server will expose. The LLM
+    // discovers tools dynamically via mcp_servers + mcp_tools then
+    // invokes them via mcp_call.
+    {
+        let hub = mcp_hub.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "mcp_servers".to_string(),
+                    description: "List MCP servers Goblin auto-connected to at boot (from [mcp.servers.*] config). Each server exposes one or more tools you can inspect with mcp_tools.".to_string(),
+                    parameters: serde_json::json!({"type": "object", "properties": {}, "required": []}),
+                },
+            },
+            move |_args| {
+                let hub = hub.clone();
+                Box::pin(async move {
+                    let names = hub.server_names();
+                    if names.is_empty() {
+                        Ok("No MCP servers configured.".to_string())
+                    } else {
+                        Ok(format!("MCP servers ({}): {}", names.len(), names.join(", ")))
+                    }
+                })
+            },
+        );
+    }
+    {
+        let hub = mcp_hub.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "mcp_tools".to_string(),
+                    description: "List the tools available on a specific MCP server. Returns name, description, and input JSON Schema for each tool.".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": { "type": "string", "description": "MCP server name (see mcp_servers)." }
+                        },
+                        "required": ["server"]
+                    }),
+                },
+            },
+            move |args| {
+                let hub = hub.clone();
+                Box::pin(async move {
+                    let server = args["server"].as_str().ok_or("Missing 'server' parameter")?.to_string();
+                    let tools = hub.list_tools(&server)
+                        .ok_or_else(|| format!("Unknown MCP server: {}", server))?;
+                    let payload = serde_json::to_string_pretty(&tools)
+                        .map_err(|e| format!("Serialize: {}", e))?;
+                    Ok(payload)
+                })
+            },
+        );
+    }
+    {
+        let hub = mcp_hub.clone();
+        registry.register(
+            crate::provider::ToolDefinition {
+                def_type: "function".to_string(),
+                function: crate::provider::FunctionDef {
+                    name: "mcp_call".to_string(),
+                    description: "Invoke a tool on an MCP server. Pass `server`, `tool`, and `arguments` (a JSON object matching the tool's inputSchema from mcp_tools).".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": { "type": "string" },
+                            "tool": { "type": "string" },
+                            "arguments": { "type": "object", "description": "Arguments object matching the tool's inputSchema." }
+                        },
+                        "required": ["server", "tool"]
+                    }),
+                },
+            },
+            move |args| {
+                let hub = hub.clone();
+                Box::pin(async move {
+                    let server = args["server"].as_str().ok_or("Missing 'server' parameter")?.to_string();
+                    let tool = args["tool"].as_str().ok_or("Missing 'tool' parameter")?.to_string();
+                    let arguments = args.get("arguments").cloned().unwrap_or(serde_json::Value::Object(Default::default()));
+                    tokio::task::spawn_blocking(move || hub.call(&server, &tool, arguments))
+                        .await
+                        .map_err(|e| format!("MCP task panicked: {}", e))?
                 })
             },
         );
