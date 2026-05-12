@@ -31,6 +31,7 @@ struct ChatResponse {
 struct Choice {
     message: ResponseMessage,
     #[serde(default)]
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -39,12 +40,98 @@ struct ResponseMessage {
     content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<super::ToolCall>>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Usage {
     prompt_tokens: u32,
     completion_tokens: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[tokio::test]
+    async fn real_deepseek_v4_pro_api_call() {
+        let config = Config::load().expect("Failed to load config");
+        let openai_cfg = config.providers.openai
+            .expect("No openai provider in config. Set up ~/.goblin/config.toml");
+
+        let provider = OpenAIProvider {
+            api_key: openai_cfg.api_key.clone(),
+            base_url: openai_cfg.base_url.clone(),
+        };
+
+        let messages = vec![
+            Message {
+                role: "user".into(),
+                content: "Say 'Goblin test OK' and nothing else.".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+            },
+        ];
+
+        let result = provider.chat(&messages, &[], "deepseek-v4-pro").await;
+
+        match &result {
+            Ok(resp) => {
+                eprintln!("=== DeepSeek v4-pro API TEST ===");
+                eprintln!("Content: {:?}", resp.content);
+                eprintln!("Tokens in: {}, out: {}", resp.tokens_in, resp.tokens_out);
+                eprintln!("Model: {}", resp.model);
+                assert!(resp.content.is_some(), "Response content should not be empty");
+                assert!(resp.tokens_in > 0, "Should have input tokens");
+                assert!(resp.tokens_out > 0, "Should have output tokens");
+                assert!(!resp.model.is_empty(), "Model should be returned");
+            }
+            Err(e) => {
+                panic!("DeepSeek v4-pro API call failed: {}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn real_deepseek_v4_flash_api_call() {
+        let config = Config::load().expect("Failed to load config");
+        let openai_cfg = config.providers.openai
+            .expect("No openai provider in config");
+
+        let provider = OpenAIProvider {
+            api_key: openai_cfg.api_key.clone(),
+            base_url: openai_cfg.base_url.clone(),
+        };
+
+        let messages = vec![
+            Message {
+                role: "user".into(),
+                content: "Reply with just the number 42.".into(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+            },
+        ];
+
+        let result = provider.chat(&messages, &[], "deepseek-v4-flash").await;
+
+        match &result {
+            Ok(resp) => {
+                eprintln!("=== DeepSeek v4-flash API TEST ===");
+                eprintln!("Content: {:?}", resp.content);
+                eprintln!("Tokens in: {}, out: {}", resp.tokens_in, resp.tokens_out);
+                assert!(resp.content.is_some());
+                assert!(resp.tokens_in > 0);
+                assert!(resp.tokens_out > 0);
+            }
+            Err(e) => {
+                panic!("DeepSeek v4-flash API call failed: {}", e);
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -67,7 +154,10 @@ impl Provider for OpenAIProvider {
             max_tokens: Some(8192),
         };
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
         let resp = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -105,6 +195,7 @@ impl Provider for OpenAIProvider {
             tokens_in: usage.prompt_tokens,
             tokens_out: usage.completion_tokens,
             model: model.to_string(),
+            reasoning: choice.message.reasoning_content,
         })
     }
 }

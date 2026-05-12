@@ -10,6 +10,10 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub stt: SttConfig,
+    #[serde(default)]
+    pub tts: TtsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +154,15 @@ pub struct AgentConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub temperature: f32,
+    /// Messages to protect from context compression (default: 20)
+    #[serde(default = "default_context_protect")]
+    pub context_protect_last_n: usize,
+    /// Hard message count limit before aggressive compression (default: 400)
+    #[serde(default = "default_context_hard_limit")]
+    pub context_hard_limit: usize,
+    /// Target compression ratio [0-1] (default: 0.8)
+    #[serde(default = "default_context_target_ratio")]
+    pub context_target_ratio: f64,
 }
 
 impl Default for AgentConfig {
@@ -159,12 +172,19 @@ impl Default for AgentConfig {
             max_turns: 30,
             max_tokens: default_max_tokens(),
             temperature: 0.0,
+            context_protect_last_n: default_context_protect(),
+            context_hard_limit: default_context_hard_limit(),
+            context_target_ratio: default_context_target_ratio(),
         }
     }
 }
 
+fn default_context_protect() -> usize { 20 }
+fn default_context_hard_limit() -> usize { 400 }
+fn default_context_target_ratio() -> f64 { 0.8 }
+
 fn default_model() -> String {
-    "deepseek-v4-flash".to_string()
+    "deepseek-v4-pro".to_string()
 }
 
 fn default_max_tokens() -> u32 {
@@ -188,6 +208,75 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub auto_compact_days: u32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SttConfig {
+    #[serde(default = "default_stt_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_stt_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_stt_model")]
+    pub model: String,
+}
+
+impl Default for SttConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_stt_provider(),
+            api_key: None,
+            base_url: default_stt_base_url(),
+            model: default_stt_model(),
+        }
+    }
+}
+
+fn default_stt_provider() -> String {
+    "none".to_string()
+}
+
+fn default_stt_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_stt_model() -> String {
+    "whisper-1".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsConfig {
+    /// TTS provider: "macos" (default), "openai", "edge"
+    #[serde(default = "default_tts_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_tts_base_url")]
+    pub base_url: String,
+    /// Model for provider (openai: tts-1 or tts-1-hd, edge: en-US-AriaNeural)
+    #[serde(default = "default_tts_model")]
+    pub model: String,
+    /// Voice name (openai: alloy, echo, fable, nova, onyx, shimmer)
+    #[serde(default = "default_tts_voice")]
+    pub voice: String,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_tts_provider(),
+            api_key: None,
+            base_url: default_tts_base_url(),
+            model: default_tts_model(),
+            voice: default_tts_voice(),
+        }
+    }
+}
+
+fn default_tts_provider() -> String { "macos".to_string() }
+fn default_tts_base_url() -> String { "https://api.openai.com/v1".to_string() }
+fn default_tts_model() -> String { "tts-1".to_string() }
+fn default_tts_voice() -> String { "alloy".to_string() }
 
 impl Config {
     pub fn load() -> Result<Self, String> {
@@ -221,6 +310,8 @@ impl Config {
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
             memory: MemoryConfig::default(),
+            stt: SttConfig::default(),
+            tts: TtsConfig::default(),
         })
     }
 
@@ -234,6 +325,7 @@ impl Config {
         else { "none" }
     }
 
+    #[allow(dead_code)]
     pub fn has_any_provider(&self) -> bool {
         self.providers.openai.is_some()
             || self.providers.anthropic.is_some()
@@ -279,6 +371,7 @@ impl Config {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_key_for_provider(&self, provider_name: &str, index: usize) -> Option<&str> {
         let pool: &[String] = match provider_name {
             "openai" => self.providers.openai.as_ref().map_or(&[], |c| &c.key_pool),
@@ -298,6 +391,7 @@ impl Config {
         pool.get(index).map(|s| s.as_str())
     }
 
+    #[allow(dead_code)]
     pub fn key_pool_size(&self, provider_name: &str) -> usize {
         match provider_name {
             "openai" => self.providers.openai.as_ref().map_or(0, |c| c.key_pool.len()),
@@ -352,13 +446,18 @@ mod tests {
                 },
             },
             agent: AgentConfig {
-                default_model: "deepseek-v4-flash".into(),
+                default_model: "deepseek-v4-pro".into(),
                 max_turns: 10,
                 max_tokens: 8192,
                 temperature: 0.0,
+                context_protect_last_n: 20,
+                context_hard_limit: 400,
+                context_target_ratio: 0.8,
             },
             tools: ToolsConfig::default(),
             memory: MemoryConfig::default(),
+            stt: SttConfig::default(),
+            tts: TtsConfig::default(),
         }
     }
 
@@ -372,6 +471,8 @@ mod tests {
             agent: AgentConfig::default(),
             tools: ToolsConfig::default(),
             memory: MemoryConfig::default(),
+            stt: SttConfig::default(),
+            tts: TtsConfig::default(),
         }
     }
 
@@ -418,7 +519,7 @@ mod tests {
         let mut cfg = test_config();
         cfg.providers.auto_route.enabled = false;
         let model = cfg.auto_route_model("analyze complex code refactor", false);
-        assert_eq!(model, "deepseek-v4-flash"); // default model, not strong
+        assert_eq!(model, "deepseek-v4-pro"); // default model, not strong
     }
 
     #[test]
@@ -482,7 +583,7 @@ mod tests {
     #[test]
     fn default_model_returns_agent_default() {
         let cfg = test_config();
-        assert_eq!(cfg.default_model(), "deepseek-v4-flash");
+        assert_eq!(cfg.default_model(), "deepseek-v4-pro");
     }
 
     #[test]

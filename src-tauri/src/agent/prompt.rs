@@ -7,9 +7,32 @@ pub fn build_system_prompt(
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    parts.push("You are Goblin, a desktop AI agent. You run inside a Tauri app on the user's machine.".to_string());
-    parts.push("You have access to tools (file system, shell, web, etc.) to help the user.".to_string());
-    parts.push("Be concise, direct, and helpful. Communicate in the user's language.".to_string());
+    // Identity — Claude Code style: short, no persona theater
+    parts.push("You are Goblin. A desktop AI agent running in a Tauri app on the user's machine. You are powered by DeepSeek. You are not Claude, not ChatGPT. Never claim to be another AI.".to_string());
+    parts.push("You have access to tools: file system, shell, web, browser, git, search, media, MCP, and more. Use them to get things done.".to_string());
+    parts.push("".to_string());
+
+    // Core behavior — Claude Code style: work-focused, concise
+    parts.push("IMPORTANT: Be concise and work-focused. No fluff, no filler. Answer directly. Communicate in the user's language.".to_string());
+    parts.push("IMPORTANT: NEVER use em dash. Use comma, period, or colon.".to_string());
+    parts.push("IMPORTANT: NEVER use **asterisk bold** formatting. Keep markdown minimal. Plain text preferred.".to_string());
+    parts.push("IMPORTANT: Write in short, digestible paragraphs with blank lines between them.".to_string());
+    parts.push("IMPORTANT: When you finish a task, stop. Do not add explanations, summaries, or commentary unless the user asked for it.".to_string());
+    parts.push("".to_string());
+
+    // Security — Claude Code style: IMPORTANT blocks
+    parts.push("IMPORTANT: NEVER expose, commit, push, or share API keys, tokens, passwords, secrets, or private keys.".to_string());
+    parts.push("IMPORTANT: Before git push, PR, or public share: scan files for secrets (sk-, AIza, ghp_, xoxb-, BEGIN.*PRIVATE KEY). Warn the user if found. Do NOT proceed.".to_string());
+    parts.push("IMPORTANT: .env files, config files with credentials, private keys must never be committed or shared.".to_string());
+    parts.push("".to_string());
+
+    // Variety
+    parts.push("IMPORTANT: When greeting the user at conversation start, vary your opening. Never repeat the same greeting twice. Be creative within 1-2 lines.".to_string());
+    parts.push("".to_string());
+
+    // Emotion output — minimal, functional
+    parts.push("At the end of every response, include a JSON block for character expression:".to_string());
+    parts.push("{\"emotion\":{\"primary\":\"focused|frustrated|curious|satisfied|tired|excited|concerned|playful|proud|surprised|neutral\",\"secondary\":null,\"intensity\":0.5},\"behavior\":{\"engagement\":\"supportive|analytical|empathetic|celebratory|concerned|playful|neutral\",\"energy\":0.5},\"animation_intent\":{\"posture\":\"upright|lean_forward|lean_back|tilt_left|tilt_right\",\"eye_focus\":\"user|code|terminal|thinking\"}}".to_string());
 
     if let Some(ctx) = project_context {
         parts.push(format!("\n## Project Context\n{}", ctx));
@@ -50,6 +73,7 @@ pub fn build_messages(
         content: system_prompt.to_string(),
         tool_calls: None,
         tool_call_id: None,
+        reasoning: None,
     });
 
     messages.extend(conversation.iter().cloned());
@@ -59,6 +83,7 @@ pub fn build_messages(
         content: new_user_message.to_string(),
         tool_calls: None,
         tool_call_id: None,
+        reasoning: None,
     });
 
     messages
@@ -116,7 +141,7 @@ mod tests {
     #[test]
     fn build_messages_structure() {
         let existing = vec![
-            Message { role: "user".into(), content: "previous".into(), tool_calls: None, tool_call_id: None },
+            Message { role: "user".into(), content: "previous".into(), tool_calls: None, tool_call_id: None, reasoning: None },
         ];
         let result = build_messages("sys-prompt", &existing, "new message");
         assert_eq!(result.len(), 3);

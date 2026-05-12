@@ -101,6 +101,7 @@ impl Provider for NvidiaProvider {
             tokens_in: usage.prompt_tokens,
             tokens_out: usage.completion_tokens,
             model: model.to_string(),
+            reasoning: None,
         })
     }
 }

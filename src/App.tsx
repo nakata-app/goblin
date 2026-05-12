@@ -1,28 +1,30 @@
-import { useState, useCallback, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useChatStore } from './stores/chatStore';
 import { useAgentStore } from './stores/agentStore';
 import { useSessionStore } from './stores/sessionStore';
 import { useAgent } from './hooks/useAgent';
+import { useGoblinState } from './hooks/useGoblinState';
 import { ChatPanel } from './components/ChatPanel';
 import { GoblinCharacter } from './components/GoblinCharacter';
+import { GoblinLive } from './components/GoblinLive';
 import { InputBar } from './components/InputBar';
-import { OutputPanel } from './components/OutputPanel';
+import { RightTabs } from './components/RightTabs';
 import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
 import { Sidebar } from './components/Sidebar';
+import { SessionPicker } from './components/SessionPicker';
 import type { GoblinState } from './types';
 import './styles/app.css';
 
-const GOBLIN_STATE_TEXT: Record<GoblinState, { text: string; detail: string }> = {
-  idle: { text: 'Ready', detail: 'waiting for command' },
-  thinking: { text: 'Thinking', detail: 'model responding...' },
-  reading: { text: 'Reading', detail: 'scanning files...' },
-  writing: { text: 'Writing', detail: 'editing files...' },
-  searching: { text: 'Searching', detail: 'searching...' },
-  running: { text: 'Running', detail: 'executing command...' },
-  error: { text: 'Error!', detail: 'something went wrong' },
-  success: { text: 'Done!', detail: 'operation successful' },
+const GOBLIN_STATE_TEXT: Record<GoblinState, string> = {
+  idle: 'Ready',
+  thinking: 'Thinking...',
+  reading: 'Reading...',
+  writing: 'Writing...',
+  searching: 'Searching...',
+  running: 'Running...',
+  error: 'Error!',
+  success: 'Done!',
 };
 
 function App() {
@@ -31,9 +33,15 @@ function App() {
   const setInput = useChatStore((s) => s.setInput);
   const rightPanelContent = useChatStore((s) => s.rightPanelContent);
   const setRightPanel = useChatStore((s) => s.setRightPanel);
-  const isStreaming = useChatStore((s) => s.isStreaming);
   const addMessage = useChatStore((s) => s.addMessage);
   const clearMessages = useChatStore((s) => s.clearMessages);
+
+  useEffect(() => {
+    const isTauri = '__TAURI__' in window || '__TAURI_INTERNALS__' in window;
+    if (isTauri) {
+      document.body.classList.add('tauri-overlay');
+    }
+  }, []);
 
   const goblinState = useAgentStore((s) => s.goblinState);
   const model = useAgentStore((s) => s.model);
@@ -46,6 +54,12 @@ function App() {
 
   const { sendMessage, clearConversation } = useAgent();
 
+  const {
+    emotionalState,
+    presenceState,
+    animationIntent,
+  } = useGoblinState();
+
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const fetchSessions = useSessionStore((s) => s.fetchSessions);
@@ -54,35 +68,92 @@ function App() {
 
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
 
-  const isAnimating = goblinState !== 'idle';
-  const goblin = GOBLIN_STATE_TEXT[goblinState];
+  // Fetch sessions on mount and show picker if there are recent ones
+  useEffect(() => {
+    fetchSessions().then(() => {
+      const recent = useSessionStore.getState().sessions.filter(s => s.messageCount > 0);
+      if (recent.length > 0) {
+        setShowSessionPicker(true);
+      }
+    });
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [leftPanelWidth, setLeftPanelWidth] = useState(32);
+  const [rightPanelWidth, setRightPanelWidth] = useState(30);
+  const appRef = useRef<HTMLDivElement>(null);
+  const resizingRef = useRef<'left' | 'right' | null>(null);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(32);
+
+  const handleResizeLeftMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = 'left';
+    startXRef.current = e.clientX;
+    startWidthRef.current = leftPanelWidth;
+    document.body.classList.add('resizing');
+  }, [leftPanelWidth]);
+
+  const handleResizeRightMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizingRef.current = 'right';
+    startXRef.current = e.clientX;
+    startWidthRef.current = rightPanelWidth;
+    document.body.classList.add('resizing');
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const dx = e.clientX - startXRef.current;
+      const appWidth = appRef.current?.clientWidth ?? window.innerWidth;
+      if (appWidth <= 0) return;
+      const side = resizingRef.current;
+      if (side === 'left') {
+        const newWidthPct = Math.max(16, Math.min(40, startWidthRef.current + (dx / appWidth) * 100));
+        setLeftPanelWidth(Math.round(newWidthPct * 10) / 10);
+      } else {
+        const newWidthPct = Math.max(18, Math.min(50, startWidthRef.current - (dx / appWidth) * 100));
+        setRightPanelWidth(Math.round(newWidthPct * 10) / 10);
+      }
+    };
+    const handleMouseUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = null;
+      document.body.classList.remove('resizing');
+    };
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const stateText = GOBLIN_STATE_TEXT[goblinState] ?? 'Ready';
 
   const handleSend = useCallback(() => {
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text) return;
     setInput('');
     sendMessage(text);
-  }, [input, isStreaming, setInput, sendMessage]);
+  }, [input, setInput, sendMessage]);
 
   const handleNewSession = useCallback(async () => {
     try {
       await createSession();
       clearConversation();
       setRightPanel('');
+      useChatStore.getState().clearThinking();
+      useChatStore.getState().clearTasks();
       useAgentStore.getState().reset();
     } catch (err) {
       console.error('New session failed:', err);
     }
   }, [createSession, clearConversation, setRightPanel]);
-
-  const handleDislike = useCallback(async (content: string) => {
-    try {
-      await invoke('reinforce', { preference: content.substring(0, 500) });
-    } catch (err) {
-      console.error('Reinforce failed:', err);
-    }
-  }, []);
 
   const handleSelectSession = useCallback(async (id: string) => {
     if (id === activeSessionId) return;
@@ -92,6 +163,8 @@ function App() {
 
       clearMessages();
       setRightPanel('');
+      useChatStore.getState().clearThinking();
+      useChatStore.getState().clearTasks();
       useAgentStore.getState().reset();
 
       if (data.messages && data.messages.length > 0) {
@@ -128,7 +201,9 @@ function App() {
         setRightPanel('');
         break;
       case 'copy':
-        navigator.clipboard.writeText(rightPanelContent).catch(() => {});
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(rightPanelContent).catch(() => {});
+        }
         break;
       case 'sessions':
         setSidebarOpen(true);
@@ -147,98 +222,26 @@ function App() {
         break;
       case 'model-fast':
         useAgentStore.getState().setModel('deepseek-v4-flash');
-        setRightPanel('## Model Changed\n\n**DeepSeek Flash** — optimized for fast responses.');
+        setRightPanel('## Model Changed\n\n**DeepSeek Flash** - optimized for fast responses.');
         break;
       case 'model-pro':
         useAgentStore.getState().setModel('deepseek-v4-pro');
-        setRightPanel('## Model Changed\n\n**DeepSeek Pro** — optimized for complex analysis and coding.');
-        break;
-      case 'shortcuts':
-        setRightPanel(
-          `## Keyboard Shortcuts\n\n` +
-          `### General\n` +
-          `| Command | Shortcut |\n|--------|--------|\n` +
-          `| Command palette | \`⌘K\` |\n` +
-          `| New session | \`⌘N\` |\n` +
-          `| Show sessions | \`⌘⇧S\` |\n` +
-          `| Copy output | \`⌘⇧C\` |\n` +
-          `| Close (palette/sidebar) | \`Esc\` |\n\n` +
-          `### Chat\n` +
-          `| Command | Shortcut |\n|--------|--------|\n` +
-          `| Send message | \`Enter\` |\n` +
-          `| New line | \`Shift+Enter\` |\n` +
-          `| Blur input | \`Esc\` |\n\n` +
-          `### Command Palette\n` +
-          `| Command | Shortcut |\n|--------|--------|\n` +
-          `| Move down | \`↓\` |\n` +
-          `| Move up | \`↑\` |\n` +
-          `| Select & run | \`Enter\` |`
-        );
-        break;
-      case 'help':
-        setRightPanel(
-          `## Goblin Help\n\n` +
-          `### Getting Started\n` +
-          `- **⌘K** to open command palette\n` +
-          `- **⌘N** to start a new session\n` +
-          `- Type your message in chat, press **Enter** to send\n\n` +
-          `### Tools\n` +
-          `Goblin automatically uses tools when needed:\n` +
-          `- \`read_file\`, \`write_file\`, \`edit_file\` — file operations\n` +
-          `- \`bash\` — command execution\n` +
-          `- \`git_status\`, \`git_diff\`, \`git_commit\` — git operations\n` +
-          `- \`web_search\`, \`web_fetch\` — web search\n` +
-          `- \`premortem\`, \`eisenhower\` — analysis tools\n\n` +
-          `### Provider\n` +
-          `Configure API keys in ~/.goblin/config.toml.`
-        );
-        break;
-      case 'export':
-        setRightPanel(
-          `## Session Export\n\n` +
-          `To export a session, call the **session_export** command from the Rust backend.\n\n` +
-          `\`\`\`bash\n# Via Tauri API:\ninvoke('session_export', { outputPath: 'file.jsonl' })\n\`\`\`\n\n` +
-          `Output will be in JSONL format.`
-        );
-        break;
-      case 'premortem':
-        setRightPanel(
-          `## Premortem Analysis\n\n` +
-          `To run a premortem, type in chat:\n\n` +
-          `> "Run a premortem on this plan: **[plan details]**"\n\n` +
-          `Goblin will automatically use the \`premortem\` tool to analyze every risk category.`
-        );
-        break;
-      case 'eisenhower':
-        setRightPanel(
-          `## Eisenhower Matrix\n\n` +
-          `To prioritize tasks, type in chat:\n\n` +
-          `> "Place these tasks on the Eisenhower matrix:\n` +
-          `> - [urgent+important] Fix production bug\n` +
-          `> - [important] Write tests\n` +
-          `> - [urgent] Reply to customer email\n` +
-          `> - [ ] Browse Reddit"\n\n` +
-          `Goblin will use the \`eisenhower\` tool to classify tasks.`
-        );
-        break;
-      case 'repo-status':
-        setRightPanel('To see git status, type "show git status" in chat.');
-        break;
-      case 'repo-log':
-        setRightPanel('To see recent commits, type "show recent commits" in chat.');
-        break;
-      case 'map':
-        setRightPanel(
-          'To see the project map, type "show project file structure" in chat.\n\n' +
-          'Goblin will use \`glob\` and \`read_file\` tools to analyze the structure.'
-        );
+        setRightPanel('## Model Changed\n\n**DeepSeek Pro** - optimized for complex analysis and coding.');
         break;
       default:
         break;
     }
   }, [handleNewSession, setRightPanel, rightPanelContent, tokensIn, tokensOut, cost, turnCount, model]);
 
-  // Fetch sessions on mount
+  const handlePickerSelect = useCallback(async (id: string) => {
+    setShowSessionPicker(false);
+    await handleSelectSession(id);
+  }, [handleSelectSession]);
+  const handlePickerNew = useCallback(async () => {
+    setShowSessionPicker(false);
+    await handleNewSession();
+  }, [handleNewSession]);
+
   useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
@@ -259,26 +262,6 @@ function App() {
         e.preventDefault();
         setSidebarOpen(true);
       }
-      if (mod && e.shiftKey && e.key === 'C') {
-        e.preventDefault();
-        navigator.clipboard.writeText(rightPanelContent).catch(() => {});
-      }
-      if (mod && e.key === '/') {
-        e.preventDefault();
-        if (!rightPanelContent) {
-          setRightPanel(
-            `## Keyboard Shortcuts\n\n` +
-            `| Command | Shortcut |\n|--------|--------|\n` +
-            `| Command palette | ⌘K |\n` +
-            `| New session | ⌘N |\n` +
-            `| Show sessions | ⌘⇧S |\n` +
-            `| Copy output | ⌘⇧C |\n` +
-            `| Close | Esc |\n` +
-            `| Send | Enter |\n` +
-            `| New line | Shift+Enter |`
-          );
-        }
-      }
       if (e.key === 'Escape') {
         setCmdOpen(false);
         setSidebarOpen(false);
@@ -286,11 +269,10 @@ function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleNewSession, rightPanelContent, setRightPanel]);
+  }, [handleNewSession]);
 
   return (
-    <div className="app">
-      {/* Sidebar */}
+    <div className="app" ref={appRef}>
       <Sidebar
         isOpen={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
@@ -299,11 +281,19 @@ function App() {
         onSelectSession={handleSelectSession}
       />
 
-      {/* Command Palette */}
       {cmdOpen && <CommandPalette onCommand={handleCommand} onClose={() => setCmdOpen(false)} />}
 
-      {/* LEFT PANEL */}
-      <div className="left-panel">
+      {showSessionPicker && (
+        <SessionPicker
+          sessions={sessions}
+          onSelect={handlePickerSelect}
+          onNew={handlePickerNew}
+        />
+      )}
+
+      <div className="app-main">
+      {/* LEFT: Chat */}
+      <div className="panel-chat" style={{ width: `${leftPanelWidth}%`, minWidth: 260, maxWidth: '45%' }}>
         <div className="panel-header">
           <span className="panel-header-title">goblin</span>
           <div className="panel-header-actions">
@@ -314,35 +304,44 @@ function App() {
           </div>
         </div>
 
-        <ChatPanel messages={messages} onDislike={handleDislike} />
+        <ChatPanel messages={messages} />
 
         <GoblinCharacter
-          state={goblinState}
-          text={goblin.text}
-          detail={goblin.detail}
-          isAnimating={isAnimating}
+          emotionalState={emotionalState}
+          presenceState={presenceState}
+          animationIntent={animationIntent}
         />
 
         <InputBar
           input={input}
           onInputChange={setInput}
           onSend={handleSend}
-          disabled={isAnimating || isStreaming}
         />
       </div>
 
-      {/* RIGHT PANEL */}
-      <OutputPanel
-        content={rightPanelContent}
-        onCopy={() => navigator.clipboard.writeText(rightPanelContent).catch(() => {})}
-        onClear={() => setRightPanel('')}
-        goblinState={goblinState}
-      />
+      {/* LEFT RESIZE HANDLE */}
+      <div className="panel-resize-handle" onMouseDown={handleResizeLeftMouseDown} />
+
+      {/* CENTER: Live Character */}
+      <div className="panel-center">
+        <GoblinLive
+          emotionalState={emotionalState}
+          presenceState={presenceState}
+          animationIntent={animationIntent}
+        />
+      </div>
+
+      {/* RIGHT: Tabbed utility */}
+      <div className="panel-resize-handle" onMouseDown={handleResizeRightMouseDown} />
+      <div className="panel-right" style={{ width: `${rightPanelWidth}%`, minWidth: 240, maxWidth: '50%' }}>
+        <RightTabs />
+      </div>
+      </div>
 
       {/* STATUS BAR */}
       <StatusBar
         state={goblinState}
-        stateText={goblin.text}
+        stateText={stateText}
         model={model}
         turnCount={turnCount}
         cost={cost}

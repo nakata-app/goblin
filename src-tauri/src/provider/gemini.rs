@@ -102,6 +102,7 @@ struct GeminiCandidate {
 struct GeminiResponseContent_ {
     parts: Vec<GeminiResponsePart>,
     #[serde(default)]
+    #[allow(dead_code)]
     role: Option<String>,
 }
 
@@ -299,6 +300,7 @@ impl Provider for GeminiProvider {
             tokens_in: usage.prompt_token_count,
             tokens_out: usage.candidates_token_count,
             model: model.to_string(),
+            reasoning: None,
         })
     }
 }

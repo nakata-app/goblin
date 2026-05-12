@@ -150,6 +150,7 @@ impl MemoryDb {
         Ok(results)
     }
 
+    #[allow(dead_code)]
     pub fn get_memories_by_ns(&self, ns: &str, limit: i32) -> Result<Vec<MemoryRecord>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 

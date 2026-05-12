@@ -1,0 +1,12 @@
+export { EventBus } from './EventBus';
+export { EmotionalEngine, DEFAULT_EMOTION_CONFIGS } from './EmotionalEngine';
+export { BehaviorOrchestrator, DEFAULT_EVENT_RESPONSES } from './BehaviorOrchestrator';
+export { PresenceSystem } from './PresenceSystem';
+export { AnimationDirector } from './AnimationDirector';
+export { CognitiveEngine } from './CognitiveEngine';
+export { SignalIngestion } from './SignalIngestion';
+export { extractLLMEmotion, llmOutputToTargets, tryParse } from './LLMInterpreter';
+export type * from './types';
+export type { CognitiveSnapshot } from './CognitiveEngine';
+export type { SignalConfig } from './SignalIngestion';
+export type { LLMEmotionOutput, LLMTargets } from './LLMInterpreter';

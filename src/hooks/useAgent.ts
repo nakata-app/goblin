@@ -1,7 +1,11 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useChatStore } from '../stores/chatStore';
 import { useAgentStore } from '../stores/agentStore';
+import { useCharacterStore } from '../stores/characterStore';
+import { extractLLMEmotion, llmOutputToTargets } from '../character/LLMInterpreter';
+import type { CharacterEventType } from '../character/types';
 import type { Message, ToolCall } from '../types';
 
 function generateId(): string {
@@ -14,31 +18,142 @@ interface AgentResponse {
   tokens_in: number;
   tokens_out: number;
   model: string;
+  reasoning?: string | null;
+}
+
+interface ProgressPayload {
+  type: string;
+  round?: number;
+  max?: number;
+  tool?: string;
+  args?: string;
+  success?: boolean;
+  summary?: string;
+  model?: string;
+  error?: string;
+}
+
+const TOOL_EVENT_MAP: Record<string, string> = {
+  read_file: 'agent.tool.read_file',
+  write_file: 'agent.tool.write_file',
+  edit_file: 'agent.tool.edit_file',
+  grep: 'agent.tool.grep',
+  glob: 'agent.tool.glob',
+  bash: 'agent.tool.bash',
+  web_search: 'agent.tool.web_search',
+  web_fetch: 'agent.tool.web_fetch',
+  git_status: 'agent.tool.git',
+  git_diff: 'agent.tool.git',
+  git_commit: 'agent.tool.git',
+};
+
+function stripEmotionJSON(text: string): string {
+  // Remove fenced code blocks containing emotion JSON
+  let out = text.replace(/```json\s*[\s\S]*?```\n?/g, '');
+
+  // Find emotion JSON object with bracket counting (handles nested braces)
+  const emotionIdx = out.indexOf('{"emotion"');
+  if (emotionIdx === -1) return out.trim();
+
+  let depth = 0;
+  let end = -1;
+  for (let i = emotionIdx; i < out.length; i++) {
+    if (out[i] === '{') depth++;
+    if (out[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+
+  if (end === -1) return out.trim();
+
+  try {
+    const candidate = out.substring(emotionIdx, end);
+    JSON.parse(candidate);
+    out = out.substring(0, emotionIdx) + out.substring(end);
+  } catch {
+    // Not valid JSON, leave as is
+  }
+
+  return out.trim();
 }
 
 export function useAgent() {
   const addMessage = useChatStore((s) => s.addMessage);
+  const markMessageSent = useChatStore((s) => s.markMessageSent);
   const setRightPanel = useChatStore((s) => s.setRightPanel);
   const clearMessages = useChatStore((s) => s.clearMessages);
+  const setThinking = useChatStore((s) => s.setThinking);
+  const clearThinking = useChatStore((s) => s.clearThinking);
+  const upsertTask = useChatStore((s) => s.upsertTask);
+  const clearTasks = useChatStore((s) => s.clearTasks);
+  const setModel = useAgentStore((s) => s.setModel);
   const setGoblinState = useAgentStore((s) => s.setGoblinState);
   const model = useAgentStore((s) => s.model);
   const addCost = useAgentStore((s) => s.addCost);
   const incrementTurn = useAgentStore((s) => s.incrementTurn);
   const addTokens = useAgentStore((s) => s.addTokens);
   const setError = useAgentStore((s) => s.setError);
+  const emitEvent = useCharacterStore((s) => s.emit);
+  const applyLLMOutput = useCharacterStore((s) => s.applyLLMOutput);
 
-  const sendMessage = useCallback(
-    async (text: string) => {
-      const userMsg: Message = {
-        id: generateId(),
-        role: 'user',
-        content: text,
-        timestamp: Date.now(),
-      };
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendingRef = useRef(false);
+  const queueRef = useRef<{ text: string; msgId: string } | null>(null);
 
-      addMessage(userMsg);
+  const processSend = useCallback(
+    async (text: string, existingMsgId?: string) => {
+      if (existingMsgId) {
+        markMessageSent(existingMsgId);
+      } else {
+        const userMsg: Message = {
+          id: generateId(),
+          role: 'user',
+          content: text,
+          timestamp: Date.now(),
+        };
+        addMessage(userMsg);
+      }
+      sendingRef.current = true;
       setGoblinState('thinking');
+      emitEvent('agent.thinking.started' as CharacterEventType);
       incrementTurn();
+      clearThinking();
+      clearTasks();
+
+      // Force React to flush state updates synchronously before the async invoke.
+      // Double rAF ensures: 1) React schedules render, 2) React commits render to DOM.
+      await new Promise<void>(r => {
+        requestAnimationFrame(() => requestAnimationFrame(() => r()));
+      });
+
+      // Listen for real-time progress events from the Rust backend
+      const progressUnlisten = await listen<ProgressPayload>('agent-progress', (event) => {
+        const p = event.payload;
+        const current = useChatStore.getState().rightPanelContent;
+        switch (p.type) {
+          case 'round':
+            setRightPanel(`[Round ${p.round}/${p.max}]${current ? '\n' + current : ''}`);
+            break;
+          case 'tool_start':
+            upsertTask({ id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: 'running' });
+            setRightPanel(`[TOOL] ${p.tool}(${p.args ?? ''})${current ? '\n' + current : ''}`);
+            break;
+          case 'tool_end':
+            upsertTask({ id: `pt-${Date.now()}-${Math.random().toString(36).slice(2,6)}`, name: p.tool as string, status: p.success ? 'done' : 'error' });
+            break;
+          case 'thinking':
+            setGoblinState('thinking');
+            break;
+          case 'error':
+            setGoblinState('error');
+            setError(p.error as string);
+            break;
+        }
+      });
 
       try {
         const response = await invoke<AgentResponse>('send_message', {
@@ -46,33 +161,66 @@ export function useAgent() {
           model: model === 'auto' ? null : model,
         });
 
+        progressUnlisten();
+
+        const displayContent = stripEmotionJSON(response.content);
+
         const assistantMsg: Message = {
           id: generateId(),
           role: 'assistant',
-          content: response.content,
+          content: displayContent,
           timestamp: Date.now(),
           toolCalls: response.tool_calls ?? [],
         };
 
         addMessage(assistantMsg);
-        addTokens(response.tokens_in, response.tokens_out);
 
-        const costEstimate = ((response.tokens_in / 1_000_000) * 0.28) +
-          ((response.tokens_out / 1_000_000) * 1.10);
+        const ti = response.tokens_in ?? 0;
+        const to = response.tokens_out ?? 0;
+        addTokens(ti, to);
+
+        if (response.model) {
+          setModel(response.model);
+        }
+
+        const costEstimate = ((ti / 1_000_000) * 0.28) +
+          ((to / 1_000_000) * 1.10);
         addCost(costEstimate);
 
         setGoblinState('success');
+        emitEvent('agent.success' as CharacterEventType);
+
+        const llmEmotion = extractLLMEmotion(response.content);
+        if (llmEmotion) {
+          const targets = llmOutputToTargets(llmEmotion);
+          applyLLMOutput(targets);
+        } else {
+          emitEvent('agent.response.received' as CharacterEventType);
+        }
+
+        if (response.reasoning) {
+          setThinking(response.reasoning);
+        }
 
         if (response.tool_calls && response.tool_calls.length > 0) {
           setRightPanel(
             response.tool_calls
-              .map((tc) => `[TOOL] ${tc.function.name}(${tc.function.arguments})`)
+              .map((tc) => `[TOOL] ${tc.function?.name ?? 'unknown'}(${tc.function?.arguments ?? ''})`)
               .join('\n')
           );
+
+          for (const tc of response.tool_calls) {
+            const toolName = tc.function?.name ?? '';
+            upsertTask({ id: tc.id ?? generateId(), name: toolName, status: 'running' });
+            const eventType = (TOOL_EVENT_MAP[toolName] ?? 'agent.tool.other') as CharacterEventType;
+            emitEvent(eventType, { tool: toolName });
+          }
         }
 
-        setTimeout(() => setGoblinState('idle'), 1500);
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = setTimeout(() => setGoblinState('idle'), 1500);
       } catch (err) {
+        progressUnlisten();
         const errorMsg = err instanceof Error ? err.message : String(err);
         const errorMessage: Message = {
           id: generateId(),
@@ -82,20 +230,55 @@ export function useAgent() {
         };
         addMessage(errorMessage);
         setGoblinState('error');
+        emitEvent('agent.error.occurred' as CharacterEventType);
         setError(errorMsg);
-        setTimeout(() => setGoblinState('idle'), 3000);
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = setTimeout(() => setGoblinState('idle'), 3000);
+      } finally {
+        sendingRef.current = false;
+
+        // Process queued message if any
+        if (queueRef.current) {
+          const { text: queuedText, msgId } = queueRef.current;
+          queueRef.current = null;
+          processSend(queuedText, msgId);
+        }
       }
     },
     [
       addMessage,
+      markMessageSent,
       setRightPanel,
       addCost,
       incrementTurn,
       addTokens,
+      setModel,
       setGoblinState,
       setError,
+      emitEvent,
+      applyLLMOutput,
       model,
     ]
+  );
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      if (sendingRef.current) {
+        const msgId = generateId();
+        const queuedMsg: Message = {
+          id: msgId,
+          role: 'user',
+          content: text,
+          timestamp: Date.now(),
+          queued: true,
+        };
+        addMessage(queuedMsg);
+        queueRef.current = { text, msgId };
+        return;
+      }
+      processSend(text);
+    },
+    [processSend, addMessage]
   );
 
   const clearConversation = useCallback(async () => {

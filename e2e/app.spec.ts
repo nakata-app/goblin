@@ -15,8 +15,8 @@ test.describe('goblin UI E2E', () => {
 
   test('karakter idle state\'te goruntulenir', async ({ page }) => {
     await page.goto('/');
-    const avatar = page.locator('.goblin-avatar');
-    await expect(avatar).toBeVisible();
+    const character = page.locator('.goblin-strip');
+    await expect(character).toBeVisible();
     await expect(page.locator('.goblin-status-text')).toContainText('Ready');
   });
 

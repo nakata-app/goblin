@@ -77,7 +77,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   deleteSession: async (id: string) => {
     await invoke('session_delete', { id });
-    get().fetchSessions();
+    await get().fetchSessions();
   },
 
   setActiveSessionId: (id: string) => set({ activeSessionId: id }),

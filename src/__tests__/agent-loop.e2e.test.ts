@@ -23,7 +23,7 @@ describe('agent loop - sendMessage', () => {
       rightPanelContent: '',
       isStreaming: false,
     });
-    vi.useFakeTimers();
+    vi.useRealTimers();
   });
 
   it('kullanici mesaji chat\'e eklenir', async () => {
@@ -39,7 +39,9 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('selam');
+      result.current.sendMessage('selam');
+      // Wait for double rAF + invoke to complete
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const messages = useChatStore.getState().messages;
@@ -65,7 +67,8 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('test');
+      result.current.sendMessage('test');
+      await new Promise(r => setTimeout(r, 100));
     });
 
     expect(mockInvoke).toHaveBeenCalledWith('send_message', {
@@ -87,7 +90,8 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('test');
+      result.current.sendMessage('test');
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const state = useAgentStore.getState();
@@ -117,7 +121,8 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('dosyayi oku');
+      result.current.sendMessage('dosyayi oku');
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const rightPanel = useChatStore.getState().rightPanelContent;
@@ -132,7 +137,8 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('test');
+      result.current.sendMessage('test');
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const agentState = useAgentStore.getState();
@@ -161,15 +167,16 @@ describe('agent loop - sendMessage', () => {
     const { result } = renderHook(() => useAgent());
 
     await act(async () => {
-      await result.current.sendMessage('test');
+      result.current.sendMessage('test');
+      await new Promise(r => setTimeout(r, 100));
     });
 
     // thinking sonrasi success, 1500ms sonra idle
     expect(states).toContain('thinking');
     expect(states).toContain('success');
 
-    act(() => {
-      vi.advanceTimersByTime(1500);
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 1600));
     });
 
     expect(useAgentStore.getState().goblinState).toBe('idle');

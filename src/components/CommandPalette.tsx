@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 interface CommandPaletteProps {
   onCommand: (cmd: string) => void;
@@ -34,6 +34,7 @@ const COMMANDS: CommandOption[] = [
 export function CommandPalette({ onCommand, onClose }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const filtered = query
     ? COMMANDS.filter(
@@ -44,12 +45,19 @@ export function CommandPalette({ onCommand, onClose }: CommandPaletteProps) {
       )
     : COMMANDS;
 
-  // Group by category when not filtered
   const grouped = query ? null : groupBy(filtered, 'category');
 
   useEffect(() => {
     setSelectedIdx(0);
   }, [query]);
+
+  useEffect(() => {
+    if (!listRef.current) return;
+    const el = listRef.current.querySelector('.cmd-selected') as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    }
+  }, [selectedIdx]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -57,10 +65,10 @@ export function CommandPalette({ onCommand, onClose }: CommandPaletteProps) {
         onClose();
       } else if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIdx((i) => Math.min(i + 1, filtered.length - 1));
+        setSelectedIdx((i) => (i + 1) % filtered.length);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIdx((i) => Math.max(i - 1, 0));
+        setSelectedIdx((i) => (i - 1 + filtered.length) % filtered.length);
       } else if (e.key === 'Enter' && filtered[selectedIdx]) {
         onCommand(filtered[selectedIdx].id);
         onClose();
@@ -83,7 +91,7 @@ export function CommandPalette({ onCommand, onClose }: CommandPaletteProps) {
             autoFocus
           />
         </div>
-        <div className="cmd-list">
+        <div className="cmd-list" ref={listRef}>
           {filtered.length === 0 && (
             <div className="cmd-empty">No results found</div>
           )}

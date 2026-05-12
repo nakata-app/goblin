@@ -145,7 +145,10 @@ impl Provider for AnthropicProvider {
             },
         };
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
         let resp = client
             .post(&url)
             .header("x-api-key", &self.api_key)
@@ -203,6 +206,7 @@ impl Provider for AnthropicProvider {
             tokens_in: response.usage.input_tokens,
             tokens_out: response.usage.output_tokens,
             model: response.model,
+            reasoning: None,
         })
     }
 }

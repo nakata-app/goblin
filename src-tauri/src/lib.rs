@@ -19,6 +19,7 @@ use session::SessionStore;
 use tools::ToolRegistry;
 use tokio::sync::Mutex;
 use std::sync::Mutex as StdMutex;
+use tauri::Emitter;
 use tauri::State;
 use tauri::Manager;
 
@@ -58,15 +59,12 @@ fn deserialize_conversation(jsonl: &str) -> Vec<provider::Message> {
 
 #[tauri::command]
 async fn send_message(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     message: String,
     model: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut agent_guard = state.agent.lock().await;
-
-    let agent = agent_guard
-        .as_mut()
-        .ok_or_else(|| "Agent not initialized. Configure a provider in ~/.goblin/config.toml".to_string())?;
 
     let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
     let ns = format!("session:{}", session_id);
@@ -80,10 +78,41 @@ async fn send_message(
         model
     };
 
+    let agent = agent_guard
+        .as_mut()
+        .ok_or_else(|| "Agent not initialized. Configure a provider in ~/.goblin/config.toml".to_string())?;
+
+    // Emit progress: thinking started
+    let _ = app.emit("agent-progress", serde_json::json!({
+        "type": "thinking",
+        "model": selected_model.as_deref().unwrap_or("auto"),
+    }));
+
+    // Channel for real-time tool progress events from the agent loop
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let progress_app = app.clone();
+
+    // Spawn task that bridges progress events to Tauri events
+    let progress_task = tokio::spawn(async move {
+        while let Some(event) = progress_rx.recv().await {
+            let _ = progress_app.emit("agent-progress", event);
+        }
+    });
+
     let response = agent
-        .send_message(&message, None, &memories, &learned, selected_model.as_deref())
-        .await
-        .map_err(|e| format!("Agent error: {}", e))?;
+        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx))
+        .await;
+
+    // Ensure progress task completes
+    progress_task.abort();
+
+    let response = response.map_err(|e| {
+        let _ = app.emit("agent-progress", serde_json::json!({
+            "type": "error",
+            "error": e,
+        }));
+        e
+    })?;
 
     let cost = calculate_cost(response.tokens_in, response.tokens_out, &response.model);
     state.session_store.update_stats(&session_id, response.tokens_in as i64, response.tokens_out as i64, cost, &response.model).ok();
@@ -105,6 +134,7 @@ async fn send_message(
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "model": response.model,
+        "reasoning": response.reasoning,
     }))
 }
 
@@ -331,13 +361,13 @@ async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, 
             .ok_or_else(|| "Agent not initialized".to_string())?;
 
         let response = agent
-            .send_message(&job.prompt, None, &[], &[], None)
-            .await
-            .map_err(|e| format!("Agent error: {}", e))?;
-        Ok(response.content)
-    };
+                .send_message(&job.prompt, None, &[], &[], None, None)
+                            .await
+                            .map_err(|e| format!("Agent error: {}", e))?;
+                    Ok(response.content)
+                };
 
-    match &result {
+                match &result {
         Ok(output) => {
             state.cron_store.mark_run(&id, now, Some(output), None).ok();
         }
@@ -417,7 +447,7 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
                 match agent_guard.as_mut() {
                     Some(agent) => {
                         agent
-                            .send_message(&job.prompt, None, &[], &[], None)
+                            .send_message(&job.prompt, None, &[], &[], None, None)
                             .await
                             .map(|r| r.content)
                             .map_err(|e| format!("Agent error: {}", e))
@@ -486,6 +516,16 @@ fn init_agent(config: &Config, tool_registry: ToolRegistry) -> Option<AgentLoop>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Global panic hook — log to file before crash
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("[GOBLIN PANIC] {}\n{:?}", info, std::backtrace::Backtrace::force_capture());
+        eprintln!("{}", msg);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/goblin-panic.log") {
+            use std::io::Write;
+            let _ = writeln!(f, "{}", msg);
+        }
+    }));
+
     let config = Config::load().unwrap_or_else(|e| {
         eprintln!("Config load warning: {}", e);
         Config {
@@ -501,10 +541,12 @@ pub fn run() {
             agent: crate::config::AgentConfig::default(),
             tools: crate::config::ToolsConfig::default(),
             memory: crate::config::MemoryConfig::default(),
+            stt: crate::config::SttConfig::default(),
+            tts: crate::config::TtsConfig::default(),
         }
     });
 
-    let tool_registry = tools::create_tool_registry();
+    let tool_registry = tools::create_tool_registry(config.stt.clone(), config.tts.clone());
     let agent = init_agent(&config, tool_registry);
 
     let db_path = MemoryDb::default_path();
@@ -574,7 +616,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 cron_scheduler_loop(handle).await;
             });
             Ok(())
@@ -654,8 +696,8 @@ mod tests {
     #[test]
     fn serialize_deserialize_round_trip() {
         let msgs = vec![
-            Message { role: "system".into(), content: "sys prompt".into(), tool_calls: None, tool_call_id: None },
-            Message { role: "user".into(), content: "hello".into(), tool_calls: None, tool_call_id: None },
+            Message { role: "system".into(), content: "sys prompt".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "user".into(), content: "hello".into(), tool_calls: None, tool_call_id: None, reasoning: None },
         ];
         let jsonl = serialize_conversation(&msgs);
         assert!(jsonl.contains("sys prompt"));

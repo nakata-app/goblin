@@ -14,6 +14,9 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "reasoning_content")]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,7 @@ pub struct ProviderResponse {
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub model: String,
+    pub reasoning: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -63,6 +67,7 @@ pub trait Provider: Send + Sync {
     ) -> Result<ProviderResponse, String>;
 }
 
+#[allow(dead_code)]
 pub fn tool_use_system_prompt() -> &'static str {
     "You have access to a set of tools you can use to answer the user's question.\n\
      Use tools only when necessary. For each tool call, return a tool_calls block.\n\

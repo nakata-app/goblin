@@ -1,17 +1,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import type { GoblinState } from '../types';
 
-interface OutputPanelProps {
-  content: string;
-  onCopy: () => void;
-  onClear: () => void;
-  goblinState?: GoblinState;
-}
-
 export function highlightMarkdown(text: string): string {
-  // Simple token-based syntax highlight for markdown + code
-
-  // Escape HTML first
   let html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -25,7 +15,6 @@ export function highlightMarkdown(text: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Fenced code blocks
     if (line.startsWith('```')) {
       if (inCodeBlock) {
         result.push('</code></pre></div>');
@@ -46,38 +35,29 @@ export function highlightMarkdown(text: string): string {
 
     let processed = line;
 
-    // Inline code
     processed = processed.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
 
-    // Bold
+    processed = processed.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
     processed = processed.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-    // Italic
     processed = processed.replace(/\*([^*]+)\*/g, '<em>$1</em>');
 
-    // Headings
     if (processed.match(/^#{1,6}\s/)) {
       const level = (processed.match(/^(#+)/) || [''])[0].length;
       const text = processed.replace(/^#+\s*/, '');
       processed = `<h${level} class="md-heading h${level}">${text}</h${level}>`;
     }
-    // Horizontal rule
     else if (processed.match(/^[-*_]{3,}\s*$/)) {
       processed = '<hr class="md-hr" />';
     }
-    // Blockquote
     else if (processed.startsWith('&gt;')) {
       processed = `<blockquote class="md-quote">${processed.replace(/^&gt;\s?/, '')}</blockquote>`;
     }
-    // List items
     else if (processed.match(/^[\s]*[-*+]\s/)) {
       processed = processed.replace(/^([\s]*)([-*+])\s(.*)/, '$1<span class="md-bullet">$2</span> $3');
     }
-    // Numbered list
     else if (processed.match(/^[\s]*\d+\.\s/)) {
       processed = processed.replace(/^([\s]*)(\d+)(\.\s)(.*)/, '$1<span class="md-number">$2.</span> $4');
     }
-    // Links
     else {
       processed = processed.replace(
         /\[([^\]]+)\]\(([^)]+)\)/g,
@@ -85,7 +65,6 @@ export function highlightMarkdown(text: string): string {
       );
     }
 
-    // Shell output markers
     if (processed.includes('[stderr]')) {
       processed = processed.replace(/\[stderr\]/, '<span class="shell-stderr">[stderr]</span>');
     }
@@ -103,12 +82,24 @@ export function highlightMarkdown(text: string): string {
   return result.join('');
 }
 
-export function OutputPanel({ content, onCopy, onClear, goblinState }: OutputPanelProps) {
+interface OutputPanelProps {
+  content: string;
+  onCopy: () => void;
+  onClear: () => void;
+  goblinState?: GoblinState;
+  width?: number;
+}
+
+export function OutputPanel({ content, onCopy, onClear, goblinState, width }: OutputPanelProps) {
   const outputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+      const el = outputRef.current;
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   }, [content]);
 
@@ -141,7 +132,7 @@ export function OutputPanel({ content, onCopy, onClear, goblinState }: OutputPan
   const isAnimating = state !== 'idle' && state !== 'error' && state !== 'success';
 
   return (
-    <div className="right-panel">
+    <div className="right-panel" style={width ? { width: `${width}%` } : undefined}>
       <div className="panel-header">
         <span className="panel-header-title">output</span>
         <div className="panel-header-actions">

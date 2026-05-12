@@ -55,6 +55,6 @@
         "depends": []
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   }
 }

@@ -4,6 +4,7 @@ export interface Message {
   content: string;
   timestamp: number;
   toolCalls?: ToolCall[];
+  queued?: boolean;
 }
 
 export interface ToolCallFunction {
@@ -39,3 +40,19 @@ export interface Session {
   cost?: number;
   model?: string;
 }
+
+// Re-export character engine types for convenience
+export type {
+  Emotion,
+  EmotionName,
+  Mood,
+  EmotionVector,
+  EmotionConfig,
+  EmotionalState,
+  PresenceState,
+  AnimationIntent,
+  AnimationState,
+  CharacterEvent,
+  CharacterEventType,
+  CharacterMemory,
+} from '../character/types';

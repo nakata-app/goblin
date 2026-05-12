@@ -10,6 +10,10 @@ pub mod vault;
 pub mod mcp;
 pub mod skills;
 pub mod peer;
+pub mod compactor;
+
+use crate::config::SttConfig;
+use crate::config::TtsConfig;
 
 use crate::provider::ToolDefinition;
 use std::collections::HashMap;
@@ -58,13 +62,27 @@ impl ToolRegistry {
         handler(args).await
     }
 
+    #[allow(dead_code)]
     pub fn names(&self) -> Vec<String> {
         self.handlers.keys().cloned().collect()
     }
 }
 
-pub fn create_tool_registry() -> ToolRegistry {
+pub fn create_tool_registry(stt: SttConfig, tts: TtsConfig) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
+
+    let stt_api_key = stt.api_key.clone();
+    let stt_base_url = if stt.provider == "none" || stt.provider.is_empty() {
+        None
+    } else {
+        Some(stt.base_url.clone())
+    };
+
+    let tts_provider = tts.provider.clone();
+    let tts_api_key = tts.api_key.clone();
+    let tts_base_url = tts.base_url.clone();
+    let tts_model = tts.model.clone();
+    let tts_voice = tts.voice.clone();
 
     registry.register(file_ops::read_file_def(), file_ops::handle_read_file);
     registry.register(file_ops::write_file_def(), file_ops::handle_write_file);
@@ -96,7 +114,36 @@ pub fn create_tool_registry() -> ToolRegistry {
 
     // Faz 9: Media tools
     registry.register(media::vision_analyze_def(), media::handle_vision_analyze);
-    registry.register(media::text_to_speech_def(), media::handle_text_to_speech);
+
+    // TTS tool with multi-provider config
+    {
+        let provider = tts_provider.clone();
+        let api_key = tts_api_key.clone();
+        let base_url = tts_base_url.clone();
+        let model = tts_model.clone();
+        let voice = tts_voice.clone();
+        registry.register(media::text_to_speech_def(), move |args| {
+            let provider = provider.clone();
+            let api_key = api_key.clone();
+            let base_url = base_url.clone();
+            let model = model.clone();
+            let voice = voice.clone();
+            Box::pin(async move {
+                media::handle_text_to_speech(args, &provider, api_key.as_deref(), &base_url, &model, &voice).await
+            })
+        });
+    }
+
+    // STT tool with config
+    {
+        let key = stt_api_key.clone();
+        let url = stt_base_url.clone();
+        registry.register(media::voice_record_def(), move |args| {
+            let key = key.clone();
+            let url = url.clone();
+            Box::pin(async move { media::handle_voice_record(args, key, url).await })
+        });
+    }
 
     // Faz 9: Meta tools
     registry.register(meta::delegate_task_def(), meta::handle_delegate_task);

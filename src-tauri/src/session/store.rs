@@ -1,6 +1,5 @@
 use rusqlite::{Connection, params};
 use std::sync::Mutex;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,7 +71,7 @@ impl SessionStore {
     pub fn end(&self, id: &str, messages_jsonl: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let now = current_timestamp();
-        let msg_count = messages_jsonl.lines().count() as i64;
+        let _msg_count = messages_jsonl.lines().count() as i64;
 
         conn.execute(
             "UPDATE sessions SET ended_at = ?1, messages = ?2 WHERE id = ?3",
@@ -97,6 +96,7 @@ impl SessionStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_title(&self, id: &str, title: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
