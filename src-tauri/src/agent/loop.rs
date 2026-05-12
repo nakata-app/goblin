@@ -160,7 +160,12 @@ impl AgentLoop {
                 }));
             }
 
-            let use_stream = round == 0 && !tools.is_empty();
+            // Stream every round, not just round 0. Final answers after tool
+            // execution often have the most visible content; gating streaming
+            // on round 0 left users staring at a blocked spinner after each
+            // tool call. Providers without a chat_stream impl return an Err
+            // and the fallback below transparently uses non-streaming chat.
+            let use_stream = true;
 
             let resp = if use_stream {
                 let stream_tx = progress.clone();
