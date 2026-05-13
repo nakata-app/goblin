@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface WaUser { jid: string; name: string; }
-interface WaMessage { id: string; from: string; text: string; timestamp: number; }
 interface WaContact { jid: string; last_message: string; last_ts: number; unread: number; }
 interface WaHistoryMessage { id: string; jid: string; direction: 'in' | 'out'; text: string; timestamp_ms: number; }
 
@@ -53,15 +52,11 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
       const s = await invoke<BridgeStatus>('whatsapp_status');
       setStatus(s);
       if (s.status === 'connected') {
-        const msgs = await invoke<WaMessage[]>('whatsapp_poll');
-        if (msgs.length > 0) {
-          // Refresh contacts and current conversation
-          loadContacts();
-          const cur = selectedJidRef.current;
-          if (cur && msgs.some((m) => m.from === cur)) {
-            loadHistory(cur);
-          }
-        }
+        // wa_agent_loop owns bridge polling and db writes.
+        // Frontend just refreshes from db to stay in sync.
+        loadContacts();
+        const cur = selectedJidRef.current;
+        if (cur) loadHistory(cur);
       }
     } catch {
       setStatus({ status: 'stopped', error: null, user: null, qr: null });

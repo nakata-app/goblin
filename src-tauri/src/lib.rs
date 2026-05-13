@@ -1267,7 +1267,7 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
     let mut sender_sessions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
         let state = app.state::<AppState>();
 
