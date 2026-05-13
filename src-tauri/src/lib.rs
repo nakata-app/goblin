@@ -40,15 +40,15 @@ use tauri::Manager;
 use tauri::RunEvent;
 
 struct AppState {
-    // The active session's agent, kept on `agent` for backwards
-    // compatibility with single-session callers. `agents` is the full
-    // map keyed by session id — new sessions land here and the desktop
-    // window swaps `agent` to point at the current one. The map is
-    // declared but not yet read by send_message; it is the seam a
-    // future multi-window UI will plug into without touching the
-    // single-window codepath.
+    // `agent` is the bootstrap session's slot, kept for back-compat
+    // with call sites that don't carry a session id (`agent_for_session`
+    // falls back to it, `save_config` rebuilds it explicitly). `agents`
+    // holds one slot per live session keyed by session id — send_message,
+    // clear_conversation and the cron loop now all route through
+    // `current_agent_slot`/`agent_for_session` so two tabs hold their
+    // own AgentLoop and lock independently. Bootstrap aliases into
+    // `agents[bootstrap_id]` so the two views stay coherent.
     agent: Arc<Mutex<Option<AgentLoop>>>,
-    #[allow(dead_code)]
     agents: Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<Mutex<Option<AgentLoop>>>>>>,
     // Shared tool registry — every AgentLoop in `agents` holds an Arc
     // clone of this single registry, so save_config can swap it

@@ -187,7 +187,7 @@ mod tests {
             Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None },
         ];
         // Add many pairs to exceed limit
-        for i in 0..30 {
+        for _ in 0..30 {
             msgs.push(Message { role: "user".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None });
             msgs.push(Message { role: "assistant".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None });
         }
