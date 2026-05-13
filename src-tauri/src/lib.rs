@@ -1058,7 +1058,11 @@ async fn whatsapp_send(
     jid: String,
     text: String,
 ) -> Result<whatsapp::SendResult, String> {
-    state.whatsapp.send_message(&jid, &text).await
+    let result = state.whatsapp.send_message(&jid, &text).await?;
+    if result.success {
+        let _ = state.whatsapp.db.save_outbound(&jid, &text).await;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
