@@ -40,6 +40,7 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
   const [sendText, setSendText] = useState('');
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [autoReply, setAutoReply] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
 
@@ -67,6 +68,7 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
     }
     poll();
     pollRef.current = setInterval(poll, POLL_INTERVAL);
+    invoke<boolean>('whatsapp_get_auto_reply').then(setAutoReply).catch(() => {});
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -177,6 +179,18 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
             <div className="wa-user-bar">
               <span className="wa-user-icon">💬</span>
               <span className="wa-user-name">{status.user.name || status.user.jid}</span>
+              <label className="wa-toggle" title="Goblin benim adıma cevap versin">
+                <input
+                  type="checkbox"
+                  checked={autoReply}
+                  onChange={async (e) => {
+                    const val = e.target.checked;
+                    await invoke('whatsapp_set_auto_reply', { enabled: val });
+                    setAutoReply(val);
+                  }}
+                />
+                <span className="wa-toggle-label">{autoReply ? 'Otomatik cevap: Açık' : 'Otomatik cevap: Kapalı'}</span>
+              </label>
             </div>
           )}
 
@@ -228,8 +242,8 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
               onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
               placeholder="Message..."
             />
-            <button className="wa-btn wa-btn-primary" disabled={sending} onClick={handleSend}>
-              {sending ? '...' : 'Send'}
+            <button className="wa-btn wa-btn-primary" disabled={sending || !sendTo.trim() || !sendText.trim()} onClick={handleSend}>
+              {sending ? '...' : 'Gönder'}
             </button>
           </div>
         )}

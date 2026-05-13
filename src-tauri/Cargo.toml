@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Goblin - Desktop AI Agent"
 authors = ["goblin"]
 edition = "2021"
+default-run = "goblin-app"
 
 [lib]
 name = "goblin_app_lib"

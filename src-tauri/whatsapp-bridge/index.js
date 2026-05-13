@@ -2,10 +2,8 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  makeInMemoryStore,
   fetchLatestBaileysVersion,
   Browsers,
-  proto,
 } = require("@whiskeysockets/baileys");
 const express = require("express");
 const QRCode = require("qrcode");
@@ -13,7 +11,10 @@ const path = require("path");
 
 // ── Config ──
 const PORT = process.env.BRIDGE_PORT || 3469;
-const AUTH_DIR = process.env.BRIDGE_AUTH_DIR || path.join(__dirname, "auth");
+const AUTH_DIR = process.env.BRIDGE_AUTH_DIR || path.join(
+  process.env.HOME || require("os").homedir(),
+  ".goblin", "whatsapp-auth"
+);
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || "goblin-whatsapp-bridge";
 
 // ── State ──
@@ -96,6 +97,27 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// Pairing code (8-digit, phone-number based, QR alternative)
+app.post("/pair", async (req, res) => {
+  const { phone } = req.body || {};
+  if (!sock) {
+    return res.status(503).json({ error: "socket not ready" });
+  }
+  if (connectionStatus === "connected") {
+    return res.status(400).json({ error: "already connected" });
+  }
+  if (!phone || !/^\d{8,15}$/.test(String(phone))) {
+    return res.status(400).json({ error: "phone must be digits only with country code, e.g. 905551234567" });
+  }
+  try {
+    const code = await sock.requestPairingCode(String(phone));
+    console.log(`[bridge] Pairing code issued for ${phone}: ${code}`);
+    res.json({ code, phone: String(phone) });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ── Baileys Connection ──
 
 async function start() {
@@ -113,7 +135,7 @@ async function start() {
     auth: state,
     ...(waVersion ? { version: waVersion } : {}),
     printQRInTerminal: false,
-    browser: Browsers.macOS("Desktop"),
+    browser: Browsers.ubuntu("Chrome"),
     markOnlineOnConnect: false,
     syncFullHistory: false,
     shouldSyncHistoryMessage: () => false,
@@ -163,8 +185,16 @@ async function start() {
 
   // ── Incoming messages ──
   sock.ev.on("messages.upsert", (m) => {
+    console.log(`[bridge] messages.upsert: ${m.messages.length} message(s), type=${m.type}`);
     for (const msg of m.messages) {
+      console.log(`[bridge] msg keys: ${Object.keys(msg.message || {}).join(",")} fromMe=${msg.key.fromMe}`);
       if (msg.key.fromMe) continue;
+      if (!msg.message) continue;
+
+      // Skip protocol/system messages (receipts, revocations, etc.)
+      const keys = Object.keys(msg.message);
+      const SKIP_TYPES = ["protocolMessage", "messageContextInfo", "senderKeyDistributionMessage"];
+      if (keys.every((k) => SKIP_TYPES.includes(k))) continue;
 
       const sender = msg.key.remoteJid || msg.key.participant;
       let text = "";
@@ -177,19 +207,21 @@ async function start() {
       } else if (msg.message?.videoMessage?.caption) {
         text = `[video] ${msg.message.videoMessage.caption}`;
       } else {
-        text = `[media: ${Object.keys(msg.message || {}).join(", ")}]`;
+        text = `[media: ${keys.filter((k) => !SKIP_TYPES.includes(k)).join(", ")}]`;
       }
 
       if (!text) continue;
 
-      messageQueue.push({
+      const entry = {
         id: msg.key.id,
         from: sender,
         text,
         timestamp: msg.messageTimestamp
           ? Number(msg.messageTimestamp) * 1000
           : Date.now(),
-      });
+      };
+      console.log(`[bridge] QUEUED: from=${sender} text="${text}"`);
+      messageQueue.push(entry);
 
       if (messageQueue.length > MAX_QUEUE) {
         messageQueue.shift();

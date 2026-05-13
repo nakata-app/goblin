@@ -63,6 +63,15 @@ pub struct ChannelsConfig {
     pub telegram: TelegramConfig,
     #[serde(default)]
     pub webhook: WebhookConfig,
+    #[serde(default)]
+    pub whatsapp: WhatsappChannelConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WhatsappChannelConfig {
+    /// When true, Goblin auto-replies to incoming WA messages as Atakan.
+    #[serde(default)]
+    pub auto_reply: bool,
 }
 
 /// Generic JSON webhook sink. Every published event is POSTed as
