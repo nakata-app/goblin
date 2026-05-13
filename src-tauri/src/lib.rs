@@ -181,18 +181,32 @@ async fn send_message(
     }))
 }
 
+/// Pure lookup: if `session_id` has its own entry in `agents`, return
+/// that slot; otherwise return `default`. Split out from
+/// `agent_for_session` so it can be unit-tested without building a full
+/// `AppState`. The whole multi-session story rests on this: distinct
+/// session ids must resolve to distinct `Arc<Mutex<...>>` so two tabs
+/// can hold their own locks at the same time.
+fn lookup_agent_slot(
+    default: &Arc<Mutex<Option<AgentLoop>>>,
+    agents: &Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<Mutex<Option<AgentLoop>>>>>>,
+    session_id: &str,
+) -> Arc<Mutex<Option<AgentLoop>>> {
+    if let Ok(g) = agents.read() {
+        if let Some(slot) = g.get(session_id) {
+            return slot.clone();
+        }
+    }
+    default.clone()
+}
+
 /// Look up the AgentLoop slot for `session_id`. If the session has its
 /// own entry in the `agents` map, return that; otherwise return the
 /// shared default slot (`state.agent`). This means callers that don't
 /// know about the multi-agent map keep talking to the single session
 /// agent — backwards compatible.
 fn agent_for_session(state: &AppState, session_id: &str) -> Arc<Mutex<Option<AgentLoop>>> {
-    if let Ok(g) = state.agents.read() {
-        if let Some(slot) = g.get(session_id) {
-            return slot.clone();
-        }
-    }
-    state.agent.clone()
+    lookup_agent_slot(&state.agent, &state.agents, session_id)
 }
 
 /// Resolves the slot the foreground window is currently looking at.
@@ -1916,5 +1930,70 @@ mod tests {
         assert_eq!(tasks[0].name, "Fix bug #42");
         assert_eq!(tasks[0].status, "pending");
         assert_eq!(tasks[0].prompt.as_deref(), Some("Find and fix the null pointer in user.rs:142"));
+    }
+
+    // ── Multi-session agent slot routing ──
+    //
+    // These tests pin the structural guarantee behind parallel send:
+    // distinct session ids resolve to distinct `Arc<Mutex<...>>` so two
+    // tabs can hold their own locks at the same time. If a refactor
+    // accidentally collapses sessions back onto a shared mutex, these
+    // tests fail before users notice their tabs serialising again.
+
+    #[test]
+    fn lookup_agent_slot_falls_back_to_default_when_session_missing() {
+        let default = Arc::new(Mutex::new(None::<AgentLoop>));
+        let agents = Arc::new(std::sync::RwLock::new(
+            std::collections::HashMap::<String, Arc<Mutex<Option<AgentLoop>>>>::new(),
+        ));
+
+        let got = lookup_agent_slot(&default, &agents, "unknown-session");
+
+        assert!(Arc::ptr_eq(&got, &default),
+            "missing session must reuse the shared default slot");
+    }
+
+    #[test]
+    fn lookup_agent_slot_returns_per_session_slot_when_present() {
+        let default = Arc::new(Mutex::new(None::<AgentLoop>));
+        let slot = Arc::new(Mutex::new(None::<AgentLoop>));
+        let mut map = std::collections::HashMap::new();
+        map.insert("sid-a".to_string(), slot.clone());
+        let agents = Arc::new(std::sync::RwLock::new(map));
+
+        let got = lookup_agent_slot(&default, &agents, "sid-a");
+
+        assert!(Arc::ptr_eq(&got, &slot),
+            "known session must resolve to its own slot");
+        assert!(!Arc::ptr_eq(&got, &default),
+            "known session must not fall back to default");
+    }
+
+    #[tokio::test]
+    async fn distinct_sessions_have_independent_mutexes() {
+        let default = Arc::new(Mutex::new(None::<AgentLoop>));
+        let slot_a = Arc::new(Mutex::new(None::<AgentLoop>));
+        let slot_b = Arc::new(Mutex::new(None::<AgentLoop>));
+        let mut map = std::collections::HashMap::new();
+        map.insert("sid-a".to_string(), slot_a.clone());
+        map.insert("sid-b".to_string(), slot_b.clone());
+        let agents = Arc::new(std::sync::RwLock::new(map));
+
+        let resolved_a = lookup_agent_slot(&default, &agents, "sid-a");
+        let resolved_b = lookup_agent_slot(&default, &agents, "sid-b");
+
+        // Hold sid-a's lock; sid-b must still be lockable immediately.
+        // If both tabs accidentally shared a single mutex, the second
+        // lock would block until the timeout fires.
+        let _held = resolved_a.lock().await;
+        let other = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            resolved_b.lock(),
+        )
+        .await;
+
+        assert!(other.is_ok(),
+            "sid-b must lock immediately while sid-a is held — \
+             parallel-send guarantee broken");
     }
 }
