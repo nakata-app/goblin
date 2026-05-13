@@ -234,7 +234,9 @@ mod tests {
         use tokio::sync::Mutex;
 
         let tmp = std::env::temp_dir().join(format!("goblin-http-smoke-{}.db", uuid::Uuid::new_v4()));
-        let mem = Arc::new(MemoryDb::open(tmp.to_str().unwrap()).expect("memory db open"));
+        let mem_db = MemoryDb::open(tmp.to_str().unwrap()).expect("memory db open");
+        mem_db.init_schema().expect("memory schema");
+        let mem = Arc::new(mem_db);
 
         let session_conn = Connection::open_in_memory().expect("session conn");
         let sessions = Arc::new(SessionStore::new(session_conn));
@@ -316,6 +318,39 @@ mod tests {
             .await
             .expect("send 4");
         assert_eq!(r.status(), 503, "agent=None must yield 503");
+
+        // 5. /sessions → 200 + {"sessions": []} on a fresh in-memory store.
+        let r = client
+            .get(format!("{}/sessions", base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("send 5");
+        assert_eq!(r.status(), 200);
+        let body: serde_json::Value = r.json().await.expect("sessions json");
+        assert!(body["sessions"].is_array(), "sessions must be an array");
+
+        // 6. /memory?q=... → 200 + {"memories": []} on an empty db.
+        //    Proves Query<MemoryQuery> deserialization and the search path.
+        let r = client
+            .get(format!("{}/memory?q=anything", base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("send 6");
+        assert_eq!(r.status(), 200);
+        let body: serde_json::Value = r.json().await.expect("memory json");
+        assert!(body["memories"].is_array(), "memories must be an array");
+
+        // 7. /memory without required `q` query param → 400 (axum's
+        //    Query<T> extractor rejects missing fields before our handler).
+        let r = client
+            .get(format!("{}/memory", base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("send 7");
+        assert_eq!(r.status(), 400, "missing q must be 400");
 
         server.abort();
         let _ = std::fs::remove_file(&tmp);
