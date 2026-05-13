@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useChatStore, persistTask, persistClearTasks } from '../stores/chatStore';
 import { useAgentStore } from '../stores/agentStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useCharacterStore } from '../stores/characterStore';
 import { extractLLMEmotion, llmOutputToTargets } from '../character/LLMInterpreter';
 import type { CharacterEventType } from '../character/types';
@@ -42,6 +43,7 @@ interface ProgressPayload {
   tools?: string[];
   has_tool_calls?: boolean;
   chunk?: string;
+  session_id?: string;
 }
 
 const TOOL_EVENT_MAP: Record<string, string> = {
@@ -141,9 +143,20 @@ export function useAgent() {
       streamingMsgIdRef.current = null;
       streamingContentRef.current = '';
 
+      // Snapshot the session this send belongs to so we can ignore
+      // progress events that arrive after the user switches tabs.
+      const sendSessionId = useSessionStore.getState().activeSessionId;
+
       // Listen for real-time progress events from the Rust backend
       const progressUnlisten = await listen<ProgressPayload>('agent-progress', (event) => {
         const p = event.payload;
+        // Drop events from sessions other than the one this send started
+        // in. send_message_in_session stamps every event with session_id;
+        // legacy send_message emits events without it, in which case we
+        // assume they belong to the active (only) session.
+        if (p.session_id && sendSessionId && p.session_id !== sendSessionId) {
+          return;
+        }
         const current = useChatStore.getState().rightPanelContent;
         switch (p.type) {
           case 'round':
@@ -213,10 +226,19 @@ export function useAgent() {
       });
 
       try {
-        const response = await invoke<AgentResponse>('send_message', {
-          message: text,
-          model: model === 'auto' ? null : model,
-        });
+        // Route through the session-scoped command when we have a
+        // session id (multi-tab path); fall back to the legacy global
+        // command for cold boots where activeSessionId is still null.
+        const response = sendSessionId
+          ? await invoke<AgentResponse>('send_message_in_session', {
+              sessionId: sendSessionId,
+              message: text,
+              model: model === 'auto' ? null : model,
+            })
+          : await invoke<AgentResponse>('send_message', {
+              message: text,
+              model: model === 'auto' ? null : model,
+            });
 
         progressUnlisten();
 

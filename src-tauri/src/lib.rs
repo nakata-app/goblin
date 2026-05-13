@@ -193,9 +193,11 @@ fn agent_for_session(state: &AppState, session_id: &str) -> Arc<Mutex<Option<Age
 }
 
 /// Spawn a fresh AgentLoop for `session_id` and park it in the
-/// `agents` map. Used by session_create so a second window (or HTTP
-/// caller) running in parallel doesn't share conversation history
-/// with the desktop window's session.
+/// `agents` map. Unused in the desktop path now that session_create
+/// aliases agents[new_id] to state.agent (the foreground slot), but
+/// kept so callers like the HTTP API can mint a truly independent
+/// agent if they want parallel sends.
+#[allow(dead_code)]
 fn spawn_session_agent(state: &AppState, session_id: &str) -> Result<(), String> {
     let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
     let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
@@ -244,14 +246,37 @@ async fn send_message_in_session(
         "model": selected_model.as_deref().unwrap_or("auto"),
     }));
 
+    // Stream tool/reasoning/content chunks back to the window as the
+    // agent runs, exactly like send_message does, but stamp every event
+    // with session_id so the frontend can filter for its active tab.
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let progress_app = app.clone();
+    let session_id_for_bridge = session_id.clone();
+    let progress_task = tokio::spawn(async move {
+        while let Some(mut event) = progress_rx.recv().await {
+            if let Some(obj) = event.as_object_mut() {
+                obj.insert("session_id".into(), serde_json::Value::String(session_id_for_bridge.clone()));
+            }
+            let _ = progress_app.emit("agent-progress", event);
+        }
+    });
+
     let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), None, soul.as_deref())
-        .await
-        .map_err(|e| {
-            channel::publish("error", &e);
-            e
-        })?;
+        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx), soul.as_deref())
+        .await;
+
+    progress_task.abort();
+
+    let response = response.map_err(|e| {
+        let _ = app.emit("agent-progress", serde_json::json!({
+            "type": "error",
+            "session_id": session_id,
+            "error": e.clone(),
+        }));
+        channel::publish("error", &e);
+        e
+    })?;
 
     let cost = calculate_cost(response.tokens_in, response.tokens_out, &response.model);
     state.session_store.update_stats(&session_id, response.tokens_in as i64, response.tokens_out as i64, cost, &response.model).ok();
@@ -273,6 +298,8 @@ async fn send_message_in_session(
         "tokens_in": response.tokens_in,
         "tokens_out": response.tokens_out,
         "model": response.model,
+        "reasoning": response.reasoning,
+        "decisions": response.decisions,
         "session_id": session_id,
     }))
 }
@@ -456,12 +483,15 @@ async fn session_create(state: State<'_, AppState>) -> Result<session::store::Se
     };
     state.session_store.create(&new_id, Some(&default_model), Some(&provider_name))?;
 
-    // Also park a dedicated AgentLoop for the new session in the
-    // multi-agent map. The desktop window itself still talks through
-    // state.agent, but a parallel caller (HTTP API, a second window)
-    // can address this session id directly without colliding on the
-    // shared mutex.
-    let _ = spawn_session_agent(&state, &new_id);
+    // Point agents[new_id] at the freshly-cleared state.agent so
+    // send_message_in_session(new_id, ...) and the legacy send_message
+    // (which always uses state.agent + state.session_id) see the same
+    // conversation. Two windows hitting different sessions still get
+    // independent agents — only switched / brand-new sessions share
+    // state.agent's mutex with the foreground window.
+    if let Ok(mut agents) = state.agents.write() {
+        agents.insert(new_id.clone(), state.agent.clone());
+    }
 
     {
         let mut sid = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -533,6 +563,18 @@ async fn session_switch(state: State<'_, AppState>, id: String) -> Result<serde_
     {
         let mut sid_guard = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?;
         *sid_guard = id.clone();
+    }
+
+    // Keep the agents map in sync with the slot that actually holds the
+    // freshly-loaded conversation. Without this, send_message_in_session
+    // for `id` would hit either a missing key or a stale separate slot
+    // that lost its conversation when its session was last cleared.
+    // The trade-off is that switched sessions share state.agent's mutex
+    // (so a switched session won't run in true parallel with the
+    // window's foreground send), but it removes a class of "vanishing
+    // history" bugs and matches what the UI shows.
+    if let Ok(mut agents) = state.agents.write() {
+        agents.insert(id.clone(), state.agent.clone());
     }
 
     let messages_json: Vec<serde_json::Value> = messages.iter().map(|m| {
