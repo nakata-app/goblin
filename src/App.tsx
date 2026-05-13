@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { useChatStore } from './stores/chatStore';
 import { useAgentStore } from './stores/agentStore';
 import { useSessionStore } from './stores/sessionStore';
+import { useTabsStore } from './stores/tabsStore';
+import type { TabSnapshot } from './stores/tabsStore';
 import { useAgent } from './hooks/useAgent';
 import { useGoblinState } from './hooks/useGoblinState';
 import { ChatPanel } from './components/ChatPanel';
@@ -15,6 +17,7 @@ import { ConfigPanel } from './components/ConfigPanel';
 import { Sidebar } from './components/Sidebar';
 import { SessionPicker } from './components/SessionPicker';
 import { WhatsappPanel } from './components/WhatsappPanel';
+import { TabBar } from './components/TabBar';
 import type { GoblinState } from './types';
 import './styles/app.css';
 
@@ -68,6 +71,47 @@ function App() {
   const fetchSessions = useSessionStore((s) => s.fetchSessions);
   const switchSession = useSessionStore((s) => s.switchSession);
   const createSession = useSessionStore((s) => s.createSession);
+
+  const tabsHasTab = useTabsStore((s) => s.hasTab);
+  const tabsAdd = useTabsStore((s) => s.addTab);
+  const tabsUpdate = useTabsStore((s) => s.updateSnapshot);
+  const tabsGet = useTabsStore((s) => s.getSnapshot);
+  const tabsRemove = useTabsStore((s) => s.removeTab);
+
+  const buildSnapshotForCurrent = useCallback((sid: string): TabSnapshot => {
+    const chat = useChatStore.getState();
+    const agent = useAgentStore.getState();
+    const meta = useSessionStore.getState().sessions.find((s) => s.id === sid);
+    return {
+      messages: chat.messages,
+      tokensIn: agent.tokensIn,
+      tokensOut: agent.tokensOut,
+      cost: agent.cost,
+      turnCount: agent.turnCount,
+      model: agent.model,
+      title: meta?.title || '',
+    };
+  }, []);
+
+  const applySnapshot = useCallback((snap: TabSnapshot) => {
+    const chat = useChatStore.getState();
+    chat.clearMessages();
+    chat.clearThinking();
+    chat.clearTasks();
+    chat.clearDecisions();
+    setRightPanel('');
+    snap.messages.forEach((m) => chat.addMessage(m));
+    useAgentStore.setState({
+      tokensIn: snap.tokensIn,
+      tokensOut: snap.tokensOut,
+      cost: snap.cost,
+      turnCount: snap.turnCount,
+      model: snap.model || useAgentStore.getState().model,
+      goblinState: 'idle',
+      activeTool: null,
+      error: null,
+    });
+  }, [setRightPanel]);
 
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -150,6 +194,12 @@ function App() {
 
   const handleNewSession = useCallback(async () => {
     try {
+      // Snapshot the outgoing session before we wipe state.
+      const outgoing = useSessionStore.getState().activeSessionId;
+      if (outgoing) {
+        tabsUpdate(outgoing, buildSnapshotForCurrent(outgoing));
+      }
+
       await createSession();
       clearConversation();
       setRightPanel('');
@@ -157,14 +207,47 @@ function App() {
       useChatStore.getState().clearTasks();
       useChatStore.getState().fetchTasks();
       useAgentStore.getState().reset();
+
+      // After createSession() the freshest entry in sessions[] is the
+      // new one; grab its id and open it as a tab.
+      const fresh = useSessionStore.getState().sessions[0];
+      if (fresh) {
+        useSessionStore.getState().setActiveSessionId(fresh.id);
+        tabsAdd(fresh.id, {
+          messages: [],
+          tokensIn: 0,
+          tokensOut: 0,
+          cost: 0,
+          turnCount: 0,
+          model: useAgentStore.getState().model,
+          title: fresh.title || '',
+        });
+      }
     } catch (err) {
       console.error('New session failed:', err);
     }
-  }, [createSession, clearConversation, setRightPanel]);
+  }, [createSession, clearConversation, setRightPanel, tabsAdd, tabsUpdate, buildSnapshotForCurrent]);
 
   const handleSelectSession = useCallback(async (id: string) => {
     if (id === activeSessionId) return;
     try {
+      // 1. Snapshot outgoing into its tab cache (if it is a tab).
+      if (activeSessionId && tabsHasTab(activeSessionId)) {
+        tabsUpdate(activeSessionId, buildSnapshotForCurrent(activeSessionId));
+      }
+
+      // 2. Fast path: tab already cached → no backend roundtrip beyond
+      //    session_switch (which the backend still needs so subsequent
+      //    `send_message` invokes the right session).
+      const cached = tabsGet(id);
+      if (cached) {
+        await switchSession(id);
+        applySnapshot(cached);
+        useChatStore.getState().fetchTasks();
+        return;
+      }
+
+      // 3. Cold path: fetch from backend, then add as a tab.
       const data = await switchSession(id);
       if (!data) return;
 
@@ -175,14 +258,17 @@ function App() {
       useChatStore.getState().fetchTasks();
       useAgentStore.getState().reset();
 
+      const loadedMessages: { id: string; role: 'user' | 'assistant'; content: string; timestamp: number }[] = [];
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach((m) => {
-          addMessage({
+          const msg = {
             id: Math.random().toString(36).substring(2, 10),
             role: m.role as 'user' | 'assistant',
             content: m.content,
             timestamp: Date.now(),
-          });
+          };
+          loadedMessages.push(msg);
+          addMessage(msg);
         });
       }
 
@@ -195,10 +281,40 @@ function App() {
       if (data.model) {
         useAgentStore.getState().setModel(data.model);
       }
+
+      // Cache the freshly-loaded session as a tab.
+      tabsAdd(id, {
+        messages: loadedMessages,
+        tokensIn: data.tokensIn ?? 0,
+        tokensOut: data.tokensOut ?? 0,
+        cost: data.cost ?? 0,
+        turnCount: 0,
+        model: data.model || useAgentStore.getState().model,
+        title: data.title || '',
+      });
     } catch (err) {
       console.error('Session switch failed:', err);
     }
-  }, [activeSessionId, switchSession, clearMessages, setRightPanel, addMessage]);
+  }, [activeSessionId, switchSession, clearMessages, setRightPanel, addMessage, tabsHasTab, tabsUpdate, tabsGet, tabsAdd, applySnapshot, buildSnapshotForCurrent]);
+
+  const handleCloseTab = useCallback(async (id: string) => {
+    const wasActive = id === activeSessionId;
+    const nextId = tabsRemove(id);
+
+    if (wasActive) {
+      if (nextId) {
+        await handleSelectSession(nextId);
+      } else {
+        // No tabs left — wipe the view, leave backend session intact.
+        clearMessages();
+        setRightPanel('');
+        useChatStore.getState().clearThinking();
+        useChatStore.getState().clearTasks();
+        useAgentStore.getState().reset();
+        useSessionStore.getState().setActiveSessionId('');
+      }
+    }
+  }, [activeSessionId, tabsRemove, handleSelectSession, clearMessages, setRightPanel]);
 
   const handleCommand = useCallback((cmd: string) => {
     switch (cmd) {
@@ -323,6 +439,12 @@ function App() {
             <button className="header-btn" onClick={handleNewSession}>new</button>
           </div>
         </div>
+
+        <TabBar
+          onSelect={handleSelectSession}
+          onClose={handleCloseTab}
+          onNew={handleNewSession}
+        />
 
         <ChatPanel messages={messages} />
 

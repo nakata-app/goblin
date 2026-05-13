@@ -97,6 +97,90 @@ body.tauri-overlay .panel-chat .panel-header {
   cursor: default;
 }
 
+/* ---- Tab Bar (multi-session) ---- */
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(10, 10, 10, 0.35);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  height: 30px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-primary);
+}
+
+.tab-active {
+  background: rgba(120, 180, 255, 0.10);
+  color: var(--text-primary);
+  border-color: rgba(120, 180, 255, 0.25);
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.tab-close:hover {
+  opacity: 1;
+  background: rgba(255, 80, 80, 0.18);
+}
+
+.tab-new {
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, 0.10);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-new:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--text-primary);
+}
+
 /* ---- Chat Area ---- */
 .chat-area {
   flex: 1;
