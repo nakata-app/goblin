@@ -2758,6 +2758,13 @@ input[type="checkbox"] {
   width: 160px; flex-shrink: 0; border-right: 1px solid var(--border);
   overflow-y: auto; display: flex; flex-direction: column;
 }
+.wa-contacts-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.wa-contacts-label { font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.wa-new-btn { background: none; border: 1px solid var(--border); color: var(--text-dim); width: 20px; height: 20px; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.wa-new-btn:hover { border-color: var(--accent); color: var(--accent); }
+.wa-new-jid { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.wa-new-jid-input { width: 100%; background: var(--bg-tertiary); border: 1px solid var(--border); color: var(--text-primary); font-size: 11px; padding: 5px 8px; border-radius: var(--radius-sm); outline: none; font-family: var(--font-mono); box-sizing: border-box; }
+.wa-new-jid-input:focus { border-color: var(--accent); }
 .wa-contacts-empty { padding: 14px 10px; font-size: 10px; color: var(--text-dim); text-align: center; }
 .wa-contact-item {
   padding: 10px 10px; cursor: pointer; border-bottom: 1px solid var(--border);

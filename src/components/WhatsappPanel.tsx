@@ -26,6 +26,8 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
   const [sendText, setSendText] = useState('');
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [newJid, setNewJid] = useState('');
+  const [showNewJid, setShowNewJid] = useState(false);
   const [autoReply, setAutoReply] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
@@ -205,8 +207,31 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
           <div className="wa-main">
             {/* Contacts sidebar */}
             <div className="wa-contacts">
-              {contacts.length === 0 && (
-                <div className="wa-contacts-empty">No conversations yet</div>
+              <div className="wa-contacts-toolbar">
+                <span className="wa-contacts-label">Chats</span>
+                <button className="wa-new-btn" title="New conversation" onClick={() => setShowNewJid((v) => !v)}>+</button>
+              </div>
+              {showNewJid && (
+                <div className="wa-new-jid">
+                  <input
+                    className="wa-new-jid-input"
+                    value={newJid}
+                    onChange={(e) => setNewJid(e.target.value)}
+                    placeholder="905XXXXXXXXX"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newJid.trim()) {
+                        const jid = newJid.trim().includes('@') ? newJid.trim() : `${newJid.trim()}@s.whatsapp.net`;
+                        selectContact(jid);
+                        setNewJid('');
+                        setShowNewJid(false);
+                      }
+                    }}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {contacts.length === 0 && !showNewJid && (
+                <div className="wa-contacts-empty">Mesaj bekleniyor...</div>
               )}
               {contacts.map((c) => (
                 <div
