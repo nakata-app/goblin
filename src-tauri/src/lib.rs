@@ -709,10 +709,14 @@ async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, 
     // Inline async block so a failure (agent missing, send_message error,
     // script non-zero exit) becomes an Err that mark_run still records,
     // instead of `?`-returning before we touch the cron_jobs row.
+    // Route through the foreground session's slot so the cron output is
+    // appended to whichever tab the user is actually on instead of
+    // always to bootstrap (which would silently diverge from the UI).
     let result: Result<String, String> = if job.mode == "script" {
         execute_script_job(&job.prompt)
     } else {
-        let mut agent_guard = state.agent.lock().await;
+        let slot = current_agent_slot(&state);
+        let mut agent_guard = slot.lock().await;
         match agent_guard.as_mut() {
             None => Err("Agent not initialized".to_string()),
             Some(agent) => {
@@ -1111,7 +1115,8 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
             let result = if job.mode == "script" {
                 execute_script_job(&job.prompt)
             } else {
-                let mut agent_guard = state.agent.lock().await;
+                let slot = current_agent_slot(&state);
+                let mut agent_guard = slot.lock().await;
                 match agent_guard.as_mut() {
                     Some(agent) => {
                         let soul = agent::soul::load_soul();
