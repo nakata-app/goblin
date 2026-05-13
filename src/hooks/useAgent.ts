@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useChatStore, persistTask, persistClearTasks } from '../stores/chatStore';
 import { useAgentStore } from '../stores/agentStore';
 import { useSessionStore } from '../stores/sessionStore';
+import { useTabsStore } from '../stores/tabsStore';
 import { useCharacterStore } from '../stores/characterStore';
 import { extractLLMEmotion, llmOutputToTargets } from '../character/LLMInterpreter';
 import type { CharacterEventType } from '../character/types';
@@ -147,6 +148,13 @@ export function useAgent() {
       // progress events that arrive after the user switches tabs.
       const sendSessionId = useSessionStore.getState().activeSessionId;
 
+      // True only while the send's originating tab is the active one.
+      // Lets us silence streaming UI mutations after the user navigates
+      // away mid-flight; the final reply still lands in tabsStore so
+      // it reappears on next visit.
+      const isStillActive = () =>
+        !sendSessionId || useSessionStore.getState().activeSessionId === sendSessionId;
+
       // Listen for real-time progress events from the Rust backend
       const progressUnlisten = await listen<ProgressPayload>('agent-progress', (event) => {
         const p = event.payload;
@@ -155,6 +163,12 @@ export function useAgent() {
         // legacy send_message emits events without it, in which case we
         // assume they belong to the active (only) session.
         if (p.session_id && sendSessionId && p.session_id !== sendSessionId) {
+          return;
+        }
+        // The originating tab was switched away from; the user is now
+        // looking at a different chatStore, so don't pollute that view
+        // with this send's stream. Final reply still gets cached below.
+        if (!isStillActive()) {
           return;
         }
         const current = useChatStore.getState().rightPanelContent;
@@ -243,6 +257,36 @@ export function useAgent() {
         progressUnlisten();
 
         const displayContent = stripEmotionJSON(response.content);
+        const ti = response.tokens_in ?? 0;
+        const to = response.tokens_out ?? 0;
+        const costEstimate = ((ti / 1_000_000) * 0.28) +
+          ((to / 1_000_000) * 1.10);
+
+        if (!isStillActive() && sendSessionId) {
+          // The user navigated away mid-flight. Park the assistant
+          // reply + accounting directly into this session's cached
+          // snapshot so the next switch back to it shows the reply.
+          const assistantMsg: Message = {
+            id: generateId(),
+            role: 'assistant',
+            content: displayContent,
+            timestamp: Date.now(),
+            toolCalls: response.tool_calls ?? [],
+          };
+          const tabs = useTabsStore.getState();
+          const existing = tabs.getSnapshot(sendSessionId);
+          if (existing) {
+            tabs.patchSnapshot(sendSessionId, {
+              messages: [...existing.messages, assistantMsg],
+              tokensIn: existing.tokensIn + ti,
+              tokensOut: existing.tokensOut + to,
+              cost: existing.cost + costEstimate,
+              model: response.model || existing.model,
+            });
+          }
+          sendingRef.current = false;
+          return;
+        }
 
         if (streamingMsgIdRef.current) {
           setMessageContent(streamingMsgIdRef.current, displayContent);
@@ -259,16 +303,12 @@ export function useAgent() {
           addMessage(assistantMsg);
         }
 
-        const ti = response.tokens_in ?? 0;
-        const to = response.tokens_out ?? 0;
         addTokens(ti, to);
 
         if (response.model) {
           setModel(response.model);
         }
 
-        const costEstimate = ((ti / 1_000_000) * 0.28) +
-          ((to / 1_000_000) * 1.10);
         addCost(costEstimate);
 
         setGoblinState('success');
@@ -321,12 +361,24 @@ export function useAgent() {
           content: `Hata: ${errorMsg}`,
           timestamp: Date.now(),
         };
-        addMessage(errorMessage);
-        setGoblinState('error');
-        emitEvent('agent.error.occurred' as CharacterEventType);
-        setError(errorMsg);
-        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-        idleTimerRef.current = setTimeout(() => setGoblinState('idle'), 3000);
+        if (!isStillActive() && sendSessionId) {
+          // Stash the error into the originating tab's snapshot — same
+          // reasoning as the success path: don't taint the visible tab.
+          const tabs = useTabsStore.getState();
+          const existing = tabs.getSnapshot(sendSessionId);
+          if (existing) {
+            tabs.patchSnapshot(sendSessionId, {
+              messages: [...existing.messages, errorMessage],
+            });
+          }
+        } else {
+          addMessage(errorMessage);
+          setGoblinState('error');
+          emitEvent('agent.error.occurred' as CharacterEventType);
+          setError(errorMsg);
+          if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+          idleTimerRef.current = setTimeout(() => setGoblinState('idle'), 3000);
+        }
       } finally {
         sendingRef.current = false;
 

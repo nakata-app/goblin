@@ -461,6 +461,16 @@ async fn session_list(state: State<'_, AppState>) -> Result<Vec<session::store::
     state.session_store.list(50)
 }
 
+/// Returns the session id the backend booted into. The frontend uses
+/// this on first paint so it knows which tab to open without having to
+/// trigger a session_switch (which clears conversation state).
+#[tauri::command]
+async fn session_current(state: State<'_, AppState>) -> Result<String, String> {
+    state.session_id.lock()
+        .map(|g| g.clone())
+        .map_err(|e| format!("Lock error: {}", e))
+}
+
 #[tauri::command]
 async fn session_create(state: State<'_, AppState>) -> Result<session::store::SessionSummary, String> {
     let old_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
@@ -1436,6 +1446,7 @@ pub fn run() {
             memory_remove,
             memory_stats,
             session_list,
+            session_current,
             session_create,
             session_get,
             session_search,

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useChatStore } from './stores/chatStore';
 import { useAgentStore } from './stores/agentStore';
 import { useSessionStore } from './stores/sessionStore';
@@ -119,10 +120,32 @@ function App() {
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [whatsappOpen, setWhatsappOpen] = useState(false);
 
-  // Fetch sessions on mount and show picker if there are recent ones
+  // Fetch sessions on mount and show picker if there are recent ones.
+  // Also resolve the backend's current session id so the first send
+  // routes through send_message_in_session with a real id instead of
+  // falling back to the legacy send_message (which would orphan the
+  // first conversation from the tab cache).
   useEffect(() => {
-    fetchSessions().then(() => {
+    fetchSessions().then(async () => {
       useChatStore.getState().fetchTasks();
+      try {
+        const currentId = await invoke<string>('session_current');
+        if (currentId) {
+          useSessionStore.getState().setActiveSessionId(currentId);
+          const meta = useSessionStore.getState().sessions.find((s) => s.id === currentId);
+          useTabsStore.getState().addTab(currentId, {
+            messages: [],
+            tokensIn: 0,
+            tokensOut: 0,
+            cost: 0,
+            turnCount: 0,
+            model: useAgentStore.getState().model,
+            title: meta?.title || '',
+          });
+        }
+      } catch {
+        // Non-tauri envs (vitest, browser preview) — silent.
+      }
       const recent = useSessionStore.getState().sessions.filter(s => s.messageCount > 0);
       if (recent.length > 0) {
         setShowSessionPicker(true);
