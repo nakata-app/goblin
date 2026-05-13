@@ -1080,6 +1080,28 @@ async fn whatsapp_get_auto_reply(state: State<'_, AppState>) -> Result<bool, Str
         .unwrap_or(false))
 }
 
+#[tauri::command]
+async fn whatsapp_get_history(
+    state: State<'_, AppState>,
+    jid: String,
+    limit: Option<usize>,
+) -> Result<Vec<whatsapp::WaHistoryMessage>, String> {
+    state.whatsapp.db
+        .get_history(&jid, limit.unwrap_or(100))
+        .await
+        .map_err(|e| format!("WaDb history: {e}"))
+}
+
+#[tauri::command]
+async fn whatsapp_list_contacts(
+    state: State<'_, AppState>,
+) -> Result<Vec<whatsapp::WaContact>, String> {
+    state.whatsapp.db
+        .list_contacts()
+        .await
+        .map_err(|e| format!("WaDb contacts: {e}"))
+}
+
 // ── Wasm Plugin Commands ──
 
 #[tauri::command]
@@ -1254,6 +1276,13 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
             _ => continue,
         };
 
+        // Persist all inbound messages regardless of auto_reply
+        for m in &msgs {
+            if let Err(e) = state.whatsapp.db.save_inbound(m).await {
+                eprintln!("[wa_db] save_inbound error: {e}");
+            }
+        }
+
         let auto_reply = state.config.read()
             .map(|c| c.channels.whatsapp.auto_reply)
             .unwrap_or(false);
@@ -1323,8 +1352,11 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
                             || out.contains("BRIDGE_TOKEN") || out.contains("goblin-whatsapp-bridge");
                         if leaked {
                             eprintln!("[wa_agent] Output guard triggered for {}, response blocked", from_jid);
-                        } else if let Err(e) = whatsapp.send_message(&from_jid, out).await {
-                            eprintln!("[wa_agent] Send failed to {}: {}", from_jid, e);
+                        } else {
+                            let _ = whatsapp.db.save_outbound(&from_jid, out).await;
+                            if let Err(e) = whatsapp.send_message(&from_jid, out).await {
+                                eprintln!("[wa_agent] Send failed to {}: {}", from_jid, e);
+                            }
                         }
                     }
                     Ok(_) => {}
@@ -1684,6 +1716,8 @@ pub fn run() {
             whatsapp_poll,
             whatsapp_set_auto_reply,
             whatsapp_get_auto_reply,
+            whatsapp_get_history,
+            whatsapp_list_contacts,
             plugin_list,
             plugin_run,
             plugin_install,

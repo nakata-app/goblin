@@ -1,4 +1,8 @@
+pub mod db;
+pub use db::{WaContact, WaConversationDb, WaHistoryMessage};
+
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -37,13 +41,22 @@ pub struct SendResult {
 pub struct WhatsappBridge {
     process: Mutex<Option<Child>>,
     client: reqwest::Client,
+    pub db: Arc<WaConversationDb>,
 }
 
 impl WhatsappBridge {
     pub fn new() -> Self {
+        let db = WaConversationDb::open()
+            .map(Arc::new)
+            .unwrap_or_else(|e| {
+                eprintln!("[wa_db] Failed to open conversation db: {e}");
+                // Fallback: open in-memory db won't persist but won't crash
+                Arc::new(WaConversationDb::open_memory().expect("in-memory db must work"))
+            });
         Self {
             process: Mutex::new(None),
             client: reqwest::Client::new(),
+            db,
         }
     }
 
@@ -67,12 +80,15 @@ impl WhatsappBridge {
             .join("src-tauri")
             .join("whatsapp-bridge");
 
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let auth_dir = std::path::PathBuf::from(&home).join(".goblin").join("whatsapp-auth");
+
         let child = Command::new("node")
             .arg("index.js")
             .current_dir(&bridge_dir)
             .env("BRIDGE_PORT", BRIDGE_PORT.to_string())
             .env("BRIDGE_TOKEN", BRIDGE_TOKEN)
-            .env("BRIDGE_AUTH_DIR", bridge_dir.join("auth").to_str().unwrap_or("auth"))
+            .env("BRIDGE_AUTH_DIR", auth_dir.to_str().unwrap_or("/tmp/whatsapp-auth"))
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true)
