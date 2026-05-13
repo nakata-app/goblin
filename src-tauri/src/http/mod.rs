@@ -27,7 +27,12 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct HttpState {
+    /// Bootstrap session's agent slot. Only used as the fallback when
+    /// the multi-agent map has no entry for the current session id.
     pub agent: Arc<Mutex<Option<AgentLoop>>>,
+    /// Same map AppState exposes — lets the HTTP handler target the
+    /// foreground session's slot instead of always hitting bootstrap.
+    pub agents: Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<Mutex<Option<AgentLoop>>>>>>,
     pub config: Arc<std::sync::RwLock<Config>>,
     pub memory: Arc<MemoryDb>,
     pub session_id: Arc<StdMutex<String>>,
@@ -138,7 +143,16 @@ async fn post_message(
         req.model
     };
 
-    let mut agent_guard = state.agent.lock().await;
+    // Target the slot owned by the current session id, falling back to
+    // the bootstrap slot only if the agents map has nothing for it.
+    // This keeps HTTP and desktop in lockstep when the user has
+    // switched tabs in the foreground window.
+    let slot = {
+        let agents = state.agents.read()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("agents lock: {}", e)))?;
+        agents.get(&session_id).cloned().unwrap_or_else(|| state.agent.clone())
+    };
+    let mut agent_guard = slot.lock().await;
     let agent = agent_guard
         .as_mut()
         .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Agent not initialized — configure a provider in ~/.goblin/config.toml".to_string()))?;
@@ -266,6 +280,7 @@ mod tests {
 
         let state = HttpState {
             agent: Arc::new(Mutex::new(None)),
+            agents: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             config: Arc::new(std::sync::RwLock::new(cfg)),
             memory: mem,
             session_id: Arc::new(StdMutex::new("smoke-session".to_string())),

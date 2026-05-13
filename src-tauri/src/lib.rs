@@ -98,9 +98,12 @@ async fn send_message(
     message: String,
     model: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut agent_guard = state.agent.lock().await;
-
     let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
+    // Resolve the foreground tab's slot rather than the bootstrap one.
+    // Each session id now owns an independent Mutex<Option<AgentLoop>>,
+    // so two tabs targeting different ids can run in true parallel.
+    let slot = ensure_session_slot(&state, &session_id)?;
+    let mut agent_guard = slot.lock().await;
     let ns = format!("session:{}", session_id);
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
@@ -192,12 +195,55 @@ fn agent_for_session(state: &AppState, session_id: &str) -> Arc<Mutex<Option<Age
     state.agent.clone()
 }
 
+/// Resolves the slot the foreground window is currently looking at.
+/// Reads state.session_id and looks up its entry in `agents`. This is
+/// what `send_message`, `clear_conversation`, and any other "active
+/// session" command should use so each tab has its own mutex and two
+/// tabs can send in true parallel.
+fn current_agent_slot(state: &AppState) -> Arc<Mutex<Option<AgentLoop>>> {
+    let sid = state.session_id.lock().map(|g| g.clone()).unwrap_or_default();
+    agent_for_session(state, &sid)
+}
+
+/// Ensure `agents[session_id]` is populated. If not, mint a fresh
+/// AgentLoop and seed it with the saved conversation from
+/// session_store (if any). Returns the slot.
+fn ensure_session_slot(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Arc<Mutex<Option<AgentLoop>>>, String> {
+    if let Ok(g) = state.agents.read() {
+        if let Some(slot) = g.get(session_id) {
+            return Ok(slot.clone());
+        }
+    }
+    // Build a fresh slot. Use the live config + registry so the new
+    // agent honours whatever the user has configured right now.
+    let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
+    let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
+    let mut new_agent = init_agent(&cfg, registry);
+
+    // Hydrate from session_store if the session has prior messages.
+    if let Ok(Some(rec)) = state.session_store.get(session_id) {
+        if let Some(jsonl) = rec.messages.as_deref() {
+            let messages = deserialize_conversation(jsonl);
+            if let Some(a) = new_agent.as_mut() {
+                a.set_conversation(messages);
+            }
+        }
+    }
+
+    let slot = Arc::new(Mutex::new(new_agent));
+    state.agents.write()
+        .map_err(|e| format!("Agents lock: {}", e))?
+        .insert(session_id.to_string(), slot.clone());
+    Ok(slot)
+}
+
 /// Spawn a fresh AgentLoop for `session_id` and park it in the
-/// `agents` map. Unused in the desktop path now that session_create
-/// aliases agents[new_id] to state.agent (the foreground slot), but
-/// kept so callers like the HTTP API can mint a truly independent
-/// agent if they want parallel sends.
-#[allow(dead_code)]
+/// `agents` map. Each session gets its own independent slot so two
+/// sessions can run in true parallel without contending on a shared
+/// mutex.
 fn spawn_session_agent(state: &AppState, session_id: &str) -> Result<(), String> {
     let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
     let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
@@ -419,7 +465,9 @@ async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 
 #[tauri::command]
 async fn clear_conversation(state: State<'_, AppState>) -> Result<(), String> {
-    let mut agent_guard = state.agent.lock().await;
+    // Clear only the foreground tab's slot, never the whole map.
+    let slot = current_agent_slot(&state);
+    let mut agent_guard = slot.lock().await;
     if let Some(agent) = agent_guard.as_mut() {
         agent.clear();
     }
@@ -475,16 +523,19 @@ async fn session_current(state: State<'_, AppState>) -> Result<String, String> {
 async fn session_create(state: State<'_, AppState>) -> Result<session::store::SessionSummary, String> {
     let old_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
 
-    // End current session
-    let mut agent_guard = state.agent.lock().await;
-    if let Some(agent) = agent_guard.as_mut() {
-        if !agent.conversation.is_empty() {
-            let messages_jsonl = serialize_conversation(&agent.conversation);
-            state.session_store.end(&old_id, &messages_jsonl).ok();
+    // Persist the outgoing session's conversation from its own slot.
+    // We deliberately do NOT touch state.agent — the bootstrap slot
+    // keeps its data so a later switch back to it stays intact.
+    let old_slot = agent_for_session(&state, &old_id);
+    {
+        let agent_guard = old_slot.lock().await;
+        if let Some(agent) = agent_guard.as_ref() {
+            if !agent.conversation.is_empty() {
+                let messages_jsonl = serialize_conversation(&agent.conversation);
+                state.session_store.end(&old_id, &messages_jsonl).ok();
+            }
         }
-        agent.clear();
     }
-    drop(agent_guard);
 
     let new_id = uuid::Uuid::new_v4().to_string();
     let (provider_name, default_model) = {
@@ -493,15 +544,10 @@ async fn session_create(state: State<'_, AppState>) -> Result<session::store::Se
     };
     state.session_store.create(&new_id, Some(&default_model), Some(&provider_name))?;
 
-    // Point agents[new_id] at the freshly-cleared state.agent so
-    // send_message_in_session(new_id, ...) and the legacy send_message
-    // (which always uses state.agent + state.session_id) see the same
-    // conversation. Two windows hitting different sessions still get
-    // independent agents — only switched / brand-new sessions share
-    // state.agent's mutex with the foreground window.
-    if let Ok(mut agents) = state.agents.write() {
-        agents.insert(new_id.clone(), state.agent.clone());
-    }
+    // Mint a truly independent AgentLoop for the new session so two
+    // tabs (or the HTTP API) can drive different sessions at the same
+    // time without contending on a shared mutex.
+    let _ = spawn_session_agent(&state, &new_id);
 
     {
         let mut sid = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -542,19 +588,21 @@ async fn session_delete(state: State<'_, AppState>, id: String) -> Result<bool, 
 
 #[tauri::command]
 async fn session_switch(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
-    // End current session
     let old_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
 
-    let mut agent_guard = state.agent.lock().await;
-    let agent = agent_guard.as_mut()
-        .ok_or_else(|| "Agent not initialized".to_string())?;
-
-    if !agent.conversation.is_empty() && old_id != id {
-        let messages_jsonl = serialize_conversation(&agent.conversation);
-        state.session_store.end(&old_id, &messages_jsonl).ok();
+    // Persist the outgoing session's conversation out of its own slot.
+    if old_id != id {
+        let old_slot = agent_for_session(&state, &old_id);
+        let agent_guard = old_slot.lock().await;
+        if let Some(agent) = agent_guard.as_ref() {
+            if !agent.conversation.is_empty() {
+                let messages_jsonl = serialize_conversation(&agent.conversation);
+                state.session_store.end(&old_id, &messages_jsonl).ok();
+            }
+        }
     }
 
-    // Load target session
+    // Load target session metadata for the response payload.
     let session = state.session_store.get(&id)?
         .ok_or_else(|| format!("Session not found: {}", id))?;
 
@@ -566,25 +614,23 @@ async fn session_switch(state: State<'_, AppState>, id: String) -> Result<serde_
     let tokens_out = session.tokens_out as u32;
     let cost = session.cost;
 
-    agent.set_conversation(messages.clone());
-    drop(agent_guard);
+    // Make sure agents[id] exists and contains the right conversation.
+    // ensure_session_slot hydrates from session_store on first visit;
+    // if the slot is already cached we overwrite its conversation with
+    // the latest persisted snapshot to keep desktop + HTTP views aligned.
+    let target_slot = ensure_session_slot(&state, &id)?;
+    {
+        let mut target_guard = target_slot.lock().await;
+        if let Some(agent) = target_guard.as_mut() {
+            agent.set_conversation(messages.clone());
+        }
+    }
 
-    // Update session_id
+    // Update session_id last so any in-flight send on the OLD slot
+    // can't accidentally see itself routed elsewhere mid-tool-round.
     {
         let mut sid_guard = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?;
         *sid_guard = id.clone();
-    }
-
-    // Keep the agents map in sync with the slot that actually holds the
-    // freshly-loaded conversation. Without this, send_message_in_session
-    // for `id` would hit either a missing key or a stale separate slot
-    // that lost its conversation when its session was last cleared.
-    // The trade-off is that switched sessions share state.agent's mutex
-    // (so a switched session won't run in true parallel with the
-    // window's foreground send), but it removes a class of "vanishing
-    // history" bugs and matches what the UI shows.
-    if let Ok(mut agents) = state.agents.write() {
-        agents.insert(id.clone(), state.agent.clone());
     }
 
     let messages_json: Vec<serde_json::Value> = messages.iter().map(|m| {
@@ -841,6 +887,41 @@ async fn save_config(
     let mut agent_guard = state.agent.lock().await;
     *agent_guard = new_agent;
     drop(agent_guard);
+
+    // Per-session slots own their own AgentLoop instances (so different
+    // tabs can run in parallel). Rebuild each of them against the new
+    // config too, otherwise the foreground tab would honor the change
+    // while a backgrounded tab kept the old provider key. Each rebuilt
+    // agent inherits the saved conversation from session_store so the
+    // user does not lose their history.
+    let slot_ids: Vec<String> = state.agents.read()
+        .map_err(|e| format!("Agents lock: {}", e))?
+        .keys().cloned().collect();
+    for sid in slot_ids {
+        let slot = match state.agents.read().map(|g| g.get(&sid).cloned()) {
+            Ok(Some(s)) => s,
+            _ => continue,
+        };
+        // The bootstrap slot is aliased to state.agent and was already
+        // refreshed above — don't double-rebuild it or we will wipe its
+        // in-memory conversation that the user is mid-tool-round on.
+        if Arc::ptr_eq(&slot, &state.agent) {
+            continue;
+        }
+        let registry = state.tool_registry.read()
+            .map_err(|e| format!("Registry lock: {}", e))?
+            .clone();
+        let mut rebuilt = init_agent(&new_config, registry);
+        if let Ok(Some(rec)) = state.session_store.get(&sid) {
+            if let Some(jsonl) = rec.messages.as_deref() {
+                if let Some(a) = rebuilt.as_mut() {
+                    a.set_conversation(deserialize_conversation(jsonl));
+                }
+            }
+        }
+        let mut guard = slot.lock().await;
+        *guard = rebuilt;
+    }
 
     // Refresh the live notification feed against the new config before
     // we swap the in-memory Config — otherwise an event emitted in this
@@ -1391,6 +1472,7 @@ pub fn run() {
         if http_cfg.enabled {
             let http_state = http::HttpState {
                 agent: agent_arc.clone(),
+                agents: agents_arc.clone(),
                 config: config_arc.clone(),
                 memory: memory_arc.clone(),
                 session_id: session_id_arc.clone(),
