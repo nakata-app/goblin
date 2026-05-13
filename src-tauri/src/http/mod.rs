@@ -64,19 +64,7 @@ pub async fn serve(state: HttpState, cfg: HttpConfig) -> Result<(), String> {
         );
     }
 
-    let token = cfg.token.clone();
-    let auth_layer = axum::middleware::from_fn(move |req, next| {
-        let token = token.clone();
-        async move { auth_check(token, req, next).await }
-    });
-
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/message", post(post_message))
-        .route("/sessions", get(get_sessions))
-        .route("/memory", get(search_memory))
-        .layer(auth_layer)
-        .with_state(state);
+    let app = build_app(state, cfg.token.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind)
         .await
@@ -86,6 +74,21 @@ pub async fn serve(state: HttpState, cfg: HttpConfig) -> Result<(), String> {
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("serve: {}", e))
+}
+
+pub(crate) fn build_app(state: HttpState, token: String) -> Router {
+    let auth_layer = axum::middleware::from_fn(move |req, next| {
+        let token = token.clone();
+        async move { auth_check(token, req, next).await }
+    });
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/message", post(post_message))
+        .route("/sessions", get(get_sessions))
+        .route("/memory", get(search_memory))
+        .layer(auth_layer)
+        .with_state(state)
 }
 
 async fn auth_check(
@@ -214,5 +217,107 @@ mod tests {
         let expected = "";
         let ok = presented == expected && !presented.is_empty();
         assert!(!ok);
+    }
+
+    // Real-port smoke test: bind a fresh router on 127.0.0.1:0, then drive
+    // it with reqwest exactly the way a phone or curl on the LAN would.
+    // Proves the auth middleware, route table, and JSON serialization all
+    // wire up against a live tokio listener — not just an in-process tower
+    // oneshot. If this passes, `cargo run --bin goblin` exposes the same
+    // surface (modulo a real provider behind `agent`).
+    #[tokio::test]
+    async fn http_smoke_real_listener() {
+        use crate::memory::MemoryDb;
+        use crate::session::SessionStore;
+        use rusqlite::Connection;
+        use std::sync::{Arc, Mutex as StdMutex};
+        use tokio::sync::Mutex;
+
+        let tmp = std::env::temp_dir().join(format!("goblin-http-smoke-{}.db", uuid::Uuid::new_v4()));
+        let mem = Arc::new(MemoryDb::open(tmp.to_str().unwrap()).expect("memory db open"));
+
+        let session_conn = Connection::open_in_memory().expect("session conn");
+        let sessions = Arc::new(SessionStore::new(session_conn));
+        sessions.init_schema().expect("session schema");
+
+        let cfg = crate::config::Config {
+            providers: crate::config::ProvidersConfig {
+                openai: None,
+                anthropic: None,
+                nvidia: None,
+                gemini: None,
+                glm: None,
+                generic: vec![],
+                auto_route: Default::default(),
+                multi_agent: Default::default(),
+            },
+            agent: Default::default(),
+            tools: Default::default(),
+            memory: Default::default(),
+            stt: Default::default(),
+            tts: Default::default(),
+            mnemonics: Default::default(),
+            mcp: Default::default(),
+            channels: Default::default(),
+            http: Default::default(),
+        };
+
+        let state = HttpState {
+            agent: Arc::new(Mutex::new(None)),
+            config: Arc::new(std::sync::RwLock::new(cfg)),
+            memory: mem,
+            session_id: Arc::new(StdMutex::new("smoke-session".to_string())),
+            session_store: sessions,
+        };
+
+        let token = "smoke-token-xyz".to_string();
+        let app = build_app(state, token.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{}", addr);
+
+        // 1. no auth → 401
+        let r = client.get(format!("{}/health", base)).send().await.expect("send 1");
+        assert_eq!(r.status(), 401, "no-auth health must be 401");
+
+        // 2. wrong token → 401
+        let r = client
+            .get(format!("{}/health", base))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .expect("send 2");
+        assert_eq!(r.status(), 401, "wrong-token health must be 401");
+
+        // 3. correct token → 200 + {"status":"ok"}
+        let r = client
+            .get(format!("{}/health", base))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("send 3");
+        assert_eq!(r.status(), 200);
+        let body: serde_json::Value = r.json().await.expect("health json");
+        assert_eq!(body["status"], "ok");
+
+        // 4. /message with agent=None → 503 (proves routing + handler reach,
+        //    and that we fail closed instead of panicking when no provider).
+        let r = client
+            .post(format!("{}/message", base))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"text": "hi"}))
+            .send()
+            .await
+            .expect("send 4");
+        assert_eq!(r.status(), 503, "agent=None must yield 503");
+
+        server.abort();
+        let _ = std::fs::remove_file(&tmp);
     }
 }
