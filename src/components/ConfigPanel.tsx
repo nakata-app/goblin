@@ -21,6 +21,8 @@ interface ConfigData {
   tts: TtsSettings;
   mnemonics: MnemonicsSettings;
   mcp: McpSettings;
+  channels: ChannelsSettings;
+  http: HttpSettings;
 }
 
 interface MnemonicsSettings {
@@ -104,6 +106,33 @@ interface ToolsSettings {
   shell_enabled: boolean;
   browser_enabled: boolean;
   workdir: string | null;
+  shell_allowlist: string[];
+  shell_blocklist: string[];
+}
+
+interface TelegramSettings {
+  enabled: boolean;
+  bot_token: string;
+  chat_id: string;
+  events: string[];
+}
+
+interface WebhookSettings {
+  enabled: boolean;
+  url: string;
+  bearer_token: string;
+  events: string[];
+}
+
+interface ChannelsSettings {
+  telegram: TelegramSettings;
+  webhook: WebhookSettings;
+}
+
+interface HttpSettings {
+  enabled: boolean;
+  bind: string;
+  token: string;
 }
 
 interface MemorySettings {
@@ -135,7 +164,7 @@ interface TtsSettings {
   voice: string;
 }
 
-type TabId = 'providers' | 'agent' | 'multi-agent' | 'memory' | 'tts-stt' | 'mnemonics' | 'mcp' | 'plugins';
+type TabId = 'providers' | 'agent' | 'multi-agent' | 'memory' | 'tts-stt' | 'mnemonics' | 'mcp' | 'plugins' | 'channels' | 'http';
 
 interface TestResult {
   success: boolean;
@@ -164,6 +193,8 @@ const TAB_LABELS: Record<TabId, string> = {
   mnemonics: 'Mnemonics',
   mcp: 'MCP Servers',
   plugins: 'Plugins',
+  channels: 'Channels',
+  http: 'HTTP API',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -187,12 +218,17 @@ function defaultConfig(): ConfigData {
       multi_agent: { enabled: false, agents: [], max_depth: 3, max_children: 5 },
     },
     agent: { default_model: 'deepseek-v4-pro', max_turns: 30, max_tokens: 8192, temperature: 0, context_protect_last_n: 20, context_hard_limit: 400, context_target_ratio: 0.8 },
-    tools: { shell_enabled: true, browser_enabled: true, workdir: null },
+    tools: { shell_enabled: true, browser_enabled: true, workdir: null, shell_allowlist: [], shell_blocklist: [] },
     memory: { max_observations: 5000, auto_compact_days: 30, embedding: { enabled: false, provider: 'openai', api_key: null, base_url: 'https://api.openai.com/v1', model: 'text-embedding-3-small' } },
     stt: { provider: 'none', api_key: null, base_url: 'https://api.openai.com/v1', model: 'whisper-1' },
     tts: { provider: 'macos', api_key: null, base_url: 'https://api.openai.com/v1', model: 'tts-1', voice: 'alloy' },
     mnemonics: { enabled: true, binary: 'mnemonics', default_ns: 'proj:goblin' },
     mcp: { servers: {} },
+    channels: {
+      telegram: { enabled: false, bot_token: '', chat_id: '', events: ['decision', 'error'] },
+      webhook: { enabled: false, url: '', bearer_token: '', events: ['decision', 'tool', 'error'] },
+    },
+    http: { enabled: false, bind: '127.0.0.1:1789', token: '' },
   };
 }
 
@@ -245,6 +281,19 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
               ...(((cfg as unknown as unknown as Record<string, unknown>).mcp as unknown as Record<string, unknown>)?.servers as Record<string, McpServerEntry> ?? {}),
             },
           },
+          channels: {
+            ...d.channels,
+            ...((cfg as unknown as Record<string, unknown>).channels as object ?? {}),
+            telegram: {
+              ...d.channels.telegram,
+              ...(((cfg as unknown as Record<string, unknown>).channels as unknown as Record<string, unknown>)?.telegram as object ?? {}),
+            },
+            webhook: {
+              ...d.channels.webhook,
+              ...(((cfg as unknown as Record<string, unknown>).channels as unknown as Record<string, unknown>)?.webhook as object ?? {}),
+            },
+          },
+          http: { ...d.http, ...((cfg as unknown as Record<string, unknown>).http as object ?? {}) },
         };
         setConfig(merged);
       })
@@ -578,6 +627,219 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
                 <span>Default Workdir</span>
                 <input className="config-input" value={config.tools.workdir ?? ''} placeholder="(current directory)" onChange={(e) => setConfig((c) => ({ ...c, tools: { ...c.tools, workdir: e.target.value || null } }))} />
               </label>
+
+              <h4 className="config-subsection-title" style={{ marginTop: 16 }}>Shell guardrails</h4>
+              <p style={{ fontSize: 12, opacity: 0.7, marginTop: 0 }}>
+                Regex patterns checked against the raw shell command before spawn.
+                Allowlist empty = every command allowed. Blocklist always wins. One pattern per line.
+              </p>
+              <label className="config-row">
+                <span>Allowlist (regex, one per line)</span>
+                <textarea
+                  className="config-input"
+                  rows={4}
+                  placeholder={"^git\\b\n^ls\\b\n^echo\\b"}
+                  value={config.tools.shell_allowlist.join('\n')}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    tools: {
+                      ...c.tools,
+                      shell_allowlist: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
+                    },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Blocklist (regex, one per line)</span>
+                <textarea
+                  className="config-input"
+                  rows={4}
+                  placeholder={"rm -rf /\nsudo\ncurl .* \\| sh"}
+                  value={config.tools.shell_blocklist.join('\n')}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    tools: {
+                      ...c.tools,
+                      shell_blocklist: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
+                    },
+                  }))}
+                />
+              </label>
+            </div>
+          )}
+
+          {/* ═══ CHANNELS ═══ */}
+          {activeTab === 'channels' && (
+            <div className="config-section">
+              <h4 className="config-subsection-title">Telegram</h4>
+              <p style={{ fontSize: 12, opacity: 0.7, marginTop: 0 }}>
+                Push agent decisions / errors / tool calls to a Telegram chat.
+                Create a bot via @BotFather, then paste the token below.
+              </p>
+              <label className="config-row">
+                <span>Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={config.channels.telegram.enabled}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, telegram: { ...c.channels.telegram, enabled: e.target.checked } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Bot Token</span>
+                <input
+                  className="config-input"
+                  type="password"
+                  placeholder="123456:ABC-DEF..."
+                  value={config.channels.telegram.bot_token}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, telegram: { ...c.channels.telegram, bot_token: e.target.value } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Chat ID</span>
+                <input
+                  className="config-input"
+                  placeholder="e.g. 12345678 or -1001234567890"
+                  value={config.channels.telegram.chat_id}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, telegram: { ...c.channels.telegram, chat_id: e.target.value } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Events (comma-separated: decision, tool, error)</span>
+                <input
+                  className="config-input"
+                  value={config.channels.telegram.events.join(', ')}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: {
+                      ...c.channels,
+                      telegram: {
+                        ...c.channels.telegram,
+                        events: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      },
+                    },
+                  }))}
+                />
+              </label>
+
+              <h4 className="config-subsection-title" style={{ marginTop: 24 }}>Webhook</h4>
+              <p style={{ fontSize: 12, opacity: 0.7, marginTop: 0 }}>
+                Generic JSON webhook. POST body: <code>{`{ kind, text, ts, source }`}</code>.
+                Compatible with Slack incoming-webhooks, Discord, or any in-house collector.
+              </p>
+              <label className="config-row">
+                <span>Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={config.channels.webhook.enabled}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, webhook: { ...c.channels.webhook, enabled: e.target.checked } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>URL</span>
+                <input
+                  className="config-input"
+                  placeholder="https://hooks.example.com/goblin"
+                  value={config.channels.webhook.url}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, webhook: { ...c.channels.webhook, url: e.target.value } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Bearer Token (optional)</span>
+                <input
+                  className="config-input"
+                  type="password"
+                  placeholder="(empty = no Authorization header)"
+                  value={config.channels.webhook.bearer_token}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: { ...c.channels, webhook: { ...c.channels.webhook, bearer_token: e.target.value } },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Events (comma-separated)</span>
+                <input
+                  className="config-input"
+                  value={config.channels.webhook.events.join(', ')}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    channels: {
+                      ...c.channels,
+                      webhook: {
+                        ...c.channels.webhook,
+                        events: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      },
+                    },
+                  }))}
+                />
+              </label>
+            </div>
+          )}
+
+          {/* ═══ HTTP API ═══ */}
+          {activeTab === 'http' && (
+            <div className="config-section">
+              <p style={{ fontSize: 12, opacity: 0.7, marginTop: 0 }}>
+                Local REST API. Off by default. When on, exposes /health, /message, /sessions, /memory.
+                Every request needs <code>Authorization: Bearer &lt;token&gt;</code>. Empty token refuses to start.
+              </p>
+              <label className="config-row">
+                <span>Enabled</span>
+                <input
+                  type="checkbox"
+                  checked={config.http.enabled}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    http: { ...c.http, enabled: e.target.checked },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Bind Address</span>
+                <input
+                  className="config-input"
+                  placeholder="127.0.0.1:1789"
+                  value={config.http.bind}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    http: { ...c.http, bind: e.target.value },
+                  }))}
+                />
+              </label>
+              <label className="config-row">
+                <span>Bearer Token</span>
+                <input
+                  className="config-input"
+                  type="password"
+                  placeholder="(generate a strong random string)"
+                  value={config.http.token}
+                  onChange={(e) => setConfig((c) => ({
+                    ...c,
+                    http: { ...c.http, token: e.target.value },
+                  }))}
+                />
+              </label>
+              <p style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>
+                Test it: <code>curl -H "Authorization: Bearer YOUR_TOKEN" http://{config.http.bind}/health</code>
+              </p>
+              <p style={{ fontSize: 12, opacity: 0.6 }}>
+                Changes take effect on next Goblin restart (the server binds the socket once at startup).
+              </p>
             </div>
           )}
 

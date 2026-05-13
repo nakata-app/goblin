@@ -88,7 +88,11 @@ pub async fn handle_web_fetch(args: serde_json::Value) -> Result<String, String>
     let body = resp.text().await.map_err(|e| format!("Read error: {}", e))?;
 
     if body.len() > 15000 {
-        Ok(format!("{}...\n\n[content truncated at 15000 chars, total {} bytes]", &body[..15000], body.len()))
+        let mut end = 15000;
+        while end > 0 && !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(format!("{}...\n\n[content truncated at 15000 chars, total {} bytes]", &body[..end], body.len()))
     } else {
         Ok(body)
     }

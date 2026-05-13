@@ -46,6 +46,7 @@ impl PluginHost {
         Ok(Self { engine })
     }
 
+    #[allow(dead_code)]
     pub fn engine(&self) -> &Engine {
         &self.engine
     }

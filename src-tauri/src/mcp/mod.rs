@@ -135,11 +135,15 @@ impl McpServerProc {
             match self.send_request(id, method, &params) {
                 Ok(v) => return Ok(v),
                 Err(e) if attempt == 0 => {
-                    if let Ok(mut guard) = self.state.lock() {
-                        if let Some(mut c) = guard.child.take() {
-                            let _ = c.kill();
-                            let _ = c.wait();
-                        }
+                    // Take the child out from under the mutex first, then
+                    // do the blocking wait() with the lock released — any
+                    // other thread that calls request() can immediately
+                    // see `child = None` and spawn a fresh process while
+                    // we reap the corpse.
+                    let dead = self.state.lock().ok().and_then(|mut g| g.child.take());
+                    if let Some(mut c) = dead {
+                        let _ = c.kill();
+                        let _ = c.wait();
                     }
                     let _ = e;
                 }
@@ -176,11 +180,12 @@ impl McpServerProc {
 
 impl Drop for McpServerProc {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(mut child) = guard.child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        // Take the child out, drop the lock, then wait — never hold the
+        // mutex across a blocking syscall.
+        let dead = self.state.lock().ok().and_then(|mut g| g.child.take());
+        if let Some(mut child) = dead {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

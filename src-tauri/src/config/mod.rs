@@ -18,6 +18,95 @@ pub struct Config {
     pub mnemonics: MnemonicsConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub channels: ChannelsConfig,
+    #[serde(default)]
+    pub http: HttpConfig,
+}
+
+/// Optional local HTTP API. Off by default. When enabled, binds an
+/// axum server to `bind` (default 127.0.0.1:1789) and authenticates
+/// every request with `Authorization: Bearer <token>`. Designed for
+/// phone / second-laptop / cron access to the same agent that the
+/// desktop window is driving.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_http_bind")]
+    pub bind: String,
+    /// Shared secret. Empty string disables auth (refuses to start).
+    #[serde(default)]
+    pub token: String,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_http_bind(),
+            token: String::new(),
+        }
+    }
+}
+
+fn default_http_bind() -> String {
+    "127.0.0.1:1789".to_string()
+}
+
+/// Outbound notification channels (Telegram first; more later). Each
+/// channel is opt-in and fire-and-forget — a delivery failure prints a
+/// stderr line and is otherwise invisible to the agent loop.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsConfig {
+    #[serde(default)]
+    pub telegram: TelegramConfig,
+    #[serde(default)]
+    pub webhook: WebhookConfig,
+}
+
+/// Generic JSON webhook sink. Every published event is POSTed as
+/// `{"kind": "...", "text": "...", "ts": ...}` to `url`. Use this to
+/// forward observations into Slack incoming-webhooks, Discord, a
+/// claude-mem worker, or any in-house collector.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebhookConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: String,
+    /// Optional `Authorization: Bearer <token>` header. Empty string
+    /// means no Authorization header is sent at all.
+    #[serde(default)]
+    pub bearer_token: String,
+    #[serde(default = "default_webhook_events")]
+    pub events: Vec<String>,
+}
+
+fn default_webhook_events() -> Vec<String> {
+    vec!["decision".to_string(), "tool".to_string(), "error".to_string()]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TelegramConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bot token from @BotFather. Required when `enabled = true`.
+    #[serde(default)]
+    pub bot_token: String,
+    /// Destination chat id (your personal id, a group id, or a channel
+    /// id). Negative ids are groups/channels.
+    #[serde(default)]
+    pub chat_id: String,
+    /// Which event kinds to push. Default is just "decision" — i.e. the
+    /// summary that round produces, not every tool call. Add "tool" or
+    /// "error" if you want a louder feed.
+    #[serde(default = "default_telegram_events")]
+    pub events: Vec<String>,
+}
+
+fn default_telegram_events() -> Vec<String> {
+    vec!["decision".to_string(), "error".to_string()]
 }
 
 /// Generic MCP server registration. Same shape as Claude Code's MCP
@@ -241,6 +330,10 @@ fn default_max_depth() -> u32 { 3 }
 fn default_max_children() -> u32 { 5 }
 fn default_true() -> bool { true }
 
+// Trigger-based multi-agent routing config — wired in config.toml but
+// not yet consumed by the agent loop. Kept here so the routing path can
+// be turned on by the loop without re-introducing the surface.
+#[allow(dead_code)]
 impl Config {
     pub fn route_to_agent(&self, user_message: &str) -> Option<&AgentProfile> {
         if !self.providers.multi_agent.enabled || self.providers.multi_agent.agents.is_empty() {
@@ -335,6 +428,19 @@ pub struct ToolsConfig {
     pub browser_enabled: bool,
     #[serde(default)]
     pub workdir: Option<String>,
+    /// Optional regex allowlist for `bash` / `bash_background` commands.
+    /// When non-empty, a command must match at least one entry or be
+    /// rejected. Patterns are checked against the full command string
+    /// (the same string that's passed to `bash -c`). Empty list means
+    /// "no allowlist" (the current default — every command runs).
+    #[serde(default)]
+    pub shell_allowlist: Vec<String>,
+    /// Regex blocklist. Always checked, even when the allowlist is
+    /// empty. A match here is a hard reject. Use this to ban things
+    /// like `rm -rf /`, `sudo`, or known-bad CI tokens regardless of
+    /// what the allowlist says.
+    #[serde(default)]
+    pub shell_blocklist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -483,6 +589,8 @@ impl Config {
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
             mcp: McpConfig::default(),
+            channels: ChannelsConfig::default(),
+            http: HttpConfig::default(),
         })
     }
 
@@ -642,6 +750,8 @@ mod tests {
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
             mcp: McpConfig::default(),
+            channels: ChannelsConfig::default(),
+            http: HttpConfig::default(),
         }
     }
 
@@ -660,6 +770,8 @@ mod tests {
             tts: TtsConfig::default(),
             mnemonics: MnemonicsConfig::default(),
             mcp: McpConfig::default(),
+            channels: ChannelsConfig::default(),
+            http: HttpConfig::default(),
         }
     }
 

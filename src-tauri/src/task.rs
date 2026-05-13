@@ -27,6 +27,7 @@ impl TaskStore {
         Self { conn: Arc::new(Mutex::new(conn)) }
     }
 
+    #[allow(dead_code)]
     pub fn new_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory()
             .map_err(|e| format!("Failed to open in-memory db: {}", e))?;
@@ -137,6 +138,7 @@ impl TaskStore {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn upsert_subtask(
         &self,
         session_id: &str,

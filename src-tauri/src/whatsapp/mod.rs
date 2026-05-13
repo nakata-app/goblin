@@ -54,8 +54,13 @@ impl WhatsappBridge {
     /// Start the Node.js WhatsApp bridge sidecar
     pub async fn start(&self, app_dir: &str) -> Result<(), String> {
         let mut guard = self.process.lock().await;
-        if guard.is_some() {
-            return Ok(()); // already running
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return Ok(()), // alive
+                _ => {
+                    let _ = guard.take(); // dead or errored, clear handle
+                }
+            }
         }
 
         let bridge_dir = std::path::Path::new(app_dir)
@@ -68,8 +73,8 @@ impl WhatsappBridge {
             .env("BRIDGE_PORT", BRIDGE_PORT.to_string())
             .env("BRIDGE_TOKEN", BRIDGE_TOKEN)
             .env("BRIDGE_AUTH_DIR", bridge_dir.join("auth").to_str().unwrap_or("auth"))
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("Failed to start WhatsApp bridge: {}", e))?;
@@ -98,6 +103,7 @@ impl WhatsappBridge {
     }
 
     /// Check if bridge is running
+    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         self.health_check().await.is_ok()
     }

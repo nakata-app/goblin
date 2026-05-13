@@ -154,7 +154,11 @@ pub async fn handle_sandbox_exec(args: serde_json::Value) -> Result<String, Stri
 
     let trimmed = result.trim().to_string();
     if trimmed.len() > 8000 {
-        Ok(format!("{}...\n\n[output truncated at 8000 chars]", &trimmed[..8000]))
+        let mut end = 8000;
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(format!("{}...\n\n[output truncated at 8000 chars]", &trimmed[..end]))
     } else {
         Ok(trimmed)
     }

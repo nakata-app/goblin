@@ -73,6 +73,7 @@ pub fn create_tray_icon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn update_tray_status<R: Runtime>(app: &AppHandle<R>, status: &str) {
     if let Some(tray) = app.tray_by_id("main-tray") {
         let _status_item = MenuItemBuilder::with_id("status", status)

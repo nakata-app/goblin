@@ -12,7 +12,10 @@ pub struct AgentLoop {
     pub provider: Box<dyn Provider>,
     pub conversation: Vec<Message>,
     pub context_window: ContextWindow,
-    pub tool_registry: ToolRegistry,
+    // Tool registry is shared across every AgentLoop in the process —
+    // one registry per Goblin install, many parallel sessions can hold
+    // their own conversation while dispatching into the same tools.
+    pub tool_registry: std::sync::Arc<ToolRegistry>,
     pub max_tool_rounds: u32,
 }
 
@@ -102,7 +105,7 @@ impl LoopGuard {
 }
 
 impl AgentLoop {
-    pub fn new(config: Config, provider: Box<dyn Provider>, tool_registry: ToolRegistry) -> Self {
+    pub fn new(config: Config, provider: Box<dyn Provider>, tool_registry: std::sync::Arc<ToolRegistry>) -> Self {
         let max_tokens = config.agent.max_tokens;
         let cw = ContextWindow::with_config(
             max_tokens,
@@ -133,8 +136,9 @@ impl AgentLoop {
         learned: &[String],
         model_override: Option<&str>,
         progress: Option<mpsc::UnboundedSender<serde_json::Value>>,
+        soul: Option<&str>,
     ) -> Result<AgentResponse, String> {
-        let system_prompt = prompt::build_system_prompt(project_context, memories, learned);
+        let system_prompt = prompt::build_system_prompt(project_context, memories, learned, soul);
         let mut messages = prompt::build_messages(&system_prompt, &self.conversation, user_input);
         let pre_loop_len = messages.len();
 
@@ -234,6 +238,19 @@ impl AgentLoop {
                         "has_tool_calls": has_tool_calls,
                     }));
                 }
+
+                // Mirror the round's decision into the outbound feed
+                // (Telegram et al.). Only fires when channels are
+                // enabled in config; otherwise a cheap no-op.
+                {
+                    let summary = if tool_names.is_empty() {
+                        format!("round {}: final answer", round + 1)
+                    } else {
+                        format!("round {}: tools = {}", round + 1, tool_names.join(", "))
+                    };
+                    crate::channel::publish("decision", &summary);
+                }
+
                 all_decisions.push(decision);
             }
 
@@ -292,6 +309,21 @@ impl AgentLoop {
                     result_summary: truncate_str(&result_text, 200),
                     success,
                 });
+
+                // Fan-out tool observation to webhook / Telegram sinks
+                // when the user enabled the "tool" event kind. The
+                // Telegram default events list excludes "tool" to keep
+                // the chat quiet; webhook callers (claude-mem etc.)
+                // typically want every tool call.
+                {
+                    let line = format!(
+                        "{} {}: {}",
+                        if success { "ok" } else { "FAIL" },
+                        tc.function.name,
+                        truncate_str(&result_text, 200),
+                    );
+                    crate::channel::publish("tool", &line);
+                }
 
                 // Loop guardrail check
                 if let Some(guard_msg) = loop_guard.check(
@@ -437,12 +469,43 @@ pub struct AgentResponse {
     pub decisions: Vec<Decision>,
 }
 
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate_str;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_str("hello", 100), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_at_boundary() {
+        let s = "abcdefghij";
+        let out = truncate_str(s, 5);
+        assert_eq!(out, "abcde...");
+    }
+
+    // Regression: a TR / emoji string fed into truncate_str used to panic
+    // because `&s[..max_len]` could land mid-codepoint.
+    #[test]
+    fn truncate_utf8_no_panic() {
+        let s = "ç".repeat(300) + &"🦀".repeat(50);
+        let out = truncate_str(&s, 200);
+        assert!(out.ends_with("..."));
+    }
+}
+
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
+        return s.to_string();
     }
+    // max_len is a byte budget; snap to the nearest char boundary at or
+    // below it so multi-byte UTF-8 (TR, emoji, CJK) never panics here.
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 fn strip_emotion_json(content: &str) -> String {

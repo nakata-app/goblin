@@ -8,6 +8,7 @@ pub struct ContextWindow {
 }
 
 impl ContextWindow {
+    #[allow(dead_code)]
     pub fn new(max_tokens: u32) -> Self {
         Self {
             max_tokens,
@@ -40,6 +41,7 @@ impl ContextWindow {
         total + 100
     }
 
+    #[allow(dead_code)]
     pub fn fits(&self, messages: &[Message]) -> bool {
         Self::estimate_tokens(messages) < self.max_tokens
     }

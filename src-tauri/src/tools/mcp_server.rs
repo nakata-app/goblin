@@ -1,3 +1,4 @@
+use crate::tools::ToolRegistry;
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
@@ -51,8 +52,18 @@ impl McpServerHandle {
         }
     }
 
-    /// Start the MCP server on stdio. This blocks the calling thread.
-    pub fn run_stdio(&self, tool_defs: Vec<(String, String, serde_json::Value)>) {
+    /// Start the MCP server on stdio. Blocks the calling thread.
+    ///
+    /// `registry` is the live Goblin ToolRegistry; tools/call requests
+    /// dispatch into it directly. `tool_defs` is the metadata triple
+    /// (name, description, schema) advertised on tools/list — kept
+    /// separate so we can describe tools without holding the registry
+    /// lock while we describe them.
+    pub fn run_stdio(
+        &self,
+        registry: Arc<ToolRegistry>,
+        tool_defs: Vec<(String, String, serde_json::Value)>,
+    ) {
         {
             let mut running = self.running.lock().unwrap();
             *running = true;
@@ -62,6 +73,19 @@ impl McpServerHandle {
         let stdout = std::io::stdout();
         let reader = BufReader::new(stdin.lock());
         let writer = Arc::new(Mutex::new(stdout.lock()));
+
+        // Tools execute async, but MCP stdio is a synchronous line
+        // loop. We carry a tokio runtime here and block_on each call.
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[mcp-server] failed to build tokio runtime: {}", e);
+                return;
+            }
+        };
 
         eprintln!("[mcp-server] Goblin MCP server started on stdio");
 
@@ -86,7 +110,7 @@ impl McpServerHandle {
                 }
             };
 
-            let response = handle_request(&request, &tool_defs);
+            let response = handle_request(&request, &tool_defs, registry.as_ref(), &rt);
 
             let response_json = serde_json::to_string(&response).unwrap_or_default();
             if let Ok(mut w) = writer.lock() {
@@ -106,6 +130,8 @@ impl McpServerHandle {
 fn handle_request(
     request: &JsonRpcRequest,
     tool_defs: &[(String, String, serde_json::Value)],
+    registry: &ToolRegistry,
+    rt: &tokio::runtime::Runtime,
 ) -> JsonRpcResponse {
     let id = request.id.clone();
 
@@ -157,7 +183,8 @@ fn handle_request(
                 .as_ref()
                 .and_then(|p| p.get("name"))
                 .and_then(|n| n.as_str())
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_string();
 
             let tool_args = request.params
                 .as_ref()
@@ -165,20 +192,27 @@ fn handle_request(
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
 
-            // Forward tool calls via Tauri IPC — the actual execution happens in the app
-            JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id,
-                result: Some(json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Tool '{}' called with args: {}. Execution delegated to Goblin agent.",
-                            tool_name,
-                            serde_json::to_string_pretty(&tool_args).unwrap_or_default()
-                        )
-                    }]
-                })),
-                error: None,
+            // Execute the real tool via the live ToolRegistry. tools
+            // are async; block_on this synchronous request handler.
+            let result = rt.block_on(registry.execute(&tool_name, tool_args));
+            match result {
+                Ok(output) => JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: Some(json!({
+                        "content": [{ "type": "text", "text": output }]
+                    })),
+                    error: None,
+                },
+                Err(e) => JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: Some(json!({
+                        "content": [{ "type": "text", "text": format!("Tool error: {}", e) }],
+                        "isError": true
+                    })),
+                    error: None,
+                },
             }
         }
         "ping" => {
@@ -207,6 +241,14 @@ fn handle_request(
 mod tests {
     use super::*;
 
+    fn empty_registry() -> ToolRegistry {
+        ToolRegistry::new()
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
     #[test]
     fn handle_initialize() {
         let req = JsonRpcRequest {
@@ -215,7 +257,9 @@ mod tests {
             method: "initialize".into(),
             params: Some(json!({"protocolVersion": "2024-11-05"})),
         };
-        let resp = handle_request(&req, &[]);
+        let reg = empty_registry();
+        let runtime = rt();
+        let resp = handle_request(&req, &[], &reg, &runtime);
         assert!(resp.result.is_some());
         let result = resp.result.unwrap();
         assert_eq!(result["serverInfo"]["name"], "goblin");
@@ -234,7 +278,9 @@ mod tests {
             ("bash".into(), "Run a command".into(), json!({"type": "object"})),
             ("read_file".into(), "Read a file".into(), json!({"type": "object"})),
         ];
-        let resp = handle_request(&req, &tools);
+        let reg = empty_registry();
+        let runtime = rt();
+        let resp = handle_request(&req, &tools, &reg, &runtime);
         assert!(resp.result.is_some());
         let result = resp.result.unwrap();
         let listed = result["tools"].as_array().unwrap();
@@ -249,7 +295,9 @@ mod tests {
             method: "ping".into(),
             params: None,
         };
-        let resp = handle_request(&req, &[]);
+        let reg = empty_registry();
+        let runtime = rt();
+        let resp = handle_request(&req, &[], &reg, &runtime);
         assert!(resp.result.is_some());
     }
 
@@ -261,20 +309,25 @@ mod tests {
             method: "nonexistent".into(),
             params: None,
         };
-        let resp = handle_request(&req, &[]);
+        let reg = empty_registry();
+        let runtime = rt();
+        let resp = handle_request(&req, &[], &reg, &runtime);
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
     }
 
     #[test]
-    fn handle_tools_call() {
+    fn handle_tools_call_unknown_tool_returns_error_envelope() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(json!(5)),
             method: "tools/call".into(),
-            params: Some(json!({"name": "bash", "arguments": {"command": "echo hello"}})),
+            params: Some(json!({"name": "no_such_tool", "arguments": {}})),
         };
-        let resp = handle_request(&req, &[]);
-        assert!(resp.result.is_some());
+        let reg = empty_registry();
+        let runtime = rt();
+        let resp = handle_request(&req, &[], &reg, &runtime);
+        let result = resp.result.unwrap();
+        assert_eq!(result["isError"], serde_json::Value::Bool(true));
     }
 }

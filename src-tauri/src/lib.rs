@@ -1,5 +1,8 @@
 mod agent;
+mod channel;
 mod config;
+pub mod headless;
+mod http;
 mod cron;
 mod daemon;
 mod memory;
@@ -24,7 +27,6 @@ use memory::{MemoryDb, inject, compact, observe, reinforcement};
 use session::SessionStore;
 use task::TaskStore;
 use tools::ToolRegistry;
-use tools::mcp_server::McpServerHandle;
 use whatsapp::WhatsappBridge;
 use mnemonics::MnemonicsClient;
 use plugin::PluginRegistry;
@@ -38,11 +40,24 @@ use tauri::Manager;
 use tauri::RunEvent;
 
 struct AppState {
-    agent: Mutex<Option<AgentLoop>>,
-    config: Config,
-    memory: MemoryDb,
-    session_id: StdMutex<String>,
-    session_store: SessionStore,
+    // The active session's agent, kept on `agent` for backwards
+    // compatibility with single-session callers. `agents` is the full
+    // map keyed by session id — new sessions land here and the desktop
+    // window swaps `agent` to point at the current one. The map is
+    // declared but not yet read by send_message; it is the seam a
+    // future multi-window UI will plug into without touching the
+    // single-window codepath.
+    agent: Arc<Mutex<Option<AgentLoop>>>,
+    #[allow(dead_code)]
+    agents: Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<Mutex<Option<AgentLoop>>>>>>,
+    // Shared tool registry — every AgentLoop in `agents` holds an Arc
+    // clone of this single registry, so save_config can swap it
+    // atomically without rebuilding each session.
+    tool_registry: Arc<std::sync::RwLock<Arc<ToolRegistry>>>,
+    config: Arc<std::sync::RwLock<Config>>,
+    memory: Arc<MemoryDb>,
+    session_id: Arc<StdMutex<String>>,
+    session_store: Arc<SessionStore>,
     cron_store: CronStore,
     task_store: TaskStore,
     whatsapp: Arc<WhatsappBridge>,
@@ -91,7 +106,8 @@ async fn send_message(
     let learned = inject::inject_learned(&state.memory, 5);
 
     let selected_model = if model.is_none() {
-        let auto = state.config.auto_route_model(&message, false);
+        let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+        let auto = cfg.auto_route_model(&message, false);
         Some(auto.to_string())
     } else {
         model
@@ -118,8 +134,9 @@ async fn send_message(
         }
     });
 
+    let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx))
+        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx), soul.as_deref())
         .await;
 
     // Ensure progress task completes
@@ -130,6 +147,9 @@ async fn send_message(
             "type": "error",
             "error": e,
         }));
+        // Push to outbound channels too — the desktop user might not be
+        // watching the window when an overnight cron task blows up.
+        channel::publish("error", &e);
         e
     })?;
 
@@ -158,6 +178,105 @@ async fn send_message(
     }))
 }
 
+/// Look up the AgentLoop slot for `session_id`. If the session has its
+/// own entry in the `agents` map, return that; otherwise return the
+/// shared default slot (`state.agent`). This means callers that don't
+/// know about the multi-agent map keep talking to the single session
+/// agent — backwards compatible.
+fn agent_for_session(state: &AppState, session_id: &str) -> Arc<Mutex<Option<AgentLoop>>> {
+    if let Ok(g) = state.agents.read() {
+        if let Some(slot) = g.get(session_id) {
+            return slot.clone();
+        }
+    }
+    state.agent.clone()
+}
+
+/// Spawn a fresh AgentLoop for `session_id` and park it in the
+/// `agents` map. Used by session_create so a second window (or HTTP
+/// caller) running in parallel doesn't share conversation history
+/// with the desktop window's session.
+fn spawn_session_agent(state: &AppState, session_id: &str) -> Result<(), String> {
+    let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
+    let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
+    let new_agent = init_agent(&cfg, registry);
+    let slot = Arc::new(Mutex::new(new_agent));
+    state
+        .agents
+        .write()
+        .map_err(|e| format!("Agents lock: {}", e))?
+        .insert(session_id.to_string(), slot);
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_message_in_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    message: String,
+    model: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // The session-scoped send_message: look up (or fail closed for) a
+    // specific session's agent. Two windows hitting two different
+    // sessions can now run their tool rounds in parallel because each
+    // takes its own inner Mutex<Option<AgentLoop>>.
+    let slot = agent_for_session(&state, &session_id);
+    let mut agent_guard = slot.lock().await;
+    let agent = agent_guard
+        .as_mut()
+        .ok_or_else(|| format!("Session {} has no live agent. Call session_create first.", session_id))?;
+
+    let ns = format!("session:{}", session_id);
+    let memories = inject::inject_memories(&state.memory, &ns, 5);
+    let learned = inject::inject_learned(&state.memory, 5);
+
+    let selected_model = if model.is_none() {
+        let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+        Some(cfg.auto_route_model(&message, false).to_string())
+    } else {
+        model
+    };
+
+    let _ = app.emit("agent-progress", serde_json::json!({
+        "type": "thinking",
+        "session_id": session_id,
+        "model": selected_model.as_deref().unwrap_or("auto"),
+    }));
+
+    let soul = agent::soul::load_soul();
+    let response = agent
+        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), None, soul.as_deref())
+        .await
+        .map_err(|e| {
+            channel::publish("error", &e);
+            e
+        })?;
+
+    let cost = calculate_cost(response.tokens_in, response.tokens_out, &response.model);
+    state.session_store.update_stats(&session_id, response.tokens_in as i64, response.tokens_out as i64, cost, &response.model).ok();
+
+    for obs in &response.observations {
+        observe::observe_tool_call(
+            &state.memory,
+            &session_id,
+            &obs.tool_name,
+            Some(&obs.args_summary),
+            Some(&obs.result_summary),
+            obs.success,
+        );
+    }
+
+    Ok(serde_json::json!({
+        "content": response.content,
+        "tool_calls": response.tool_calls,
+        "tokens_in": response.tokens_in,
+        "tokens_out": response.tokens_out,
+        "model": response.model,
+        "session_id": session_id,
+    }))
+}
+
 fn resolve_key_from_config<'a>(config: &'a Config, provider_type: &str) -> Option<&'a str> {
     match provider_type {
         "openai" => config.providers.openai.as_ref().map(|c| c.api_key.as_str()),
@@ -176,9 +295,15 @@ fn resolve_key_from_config<'a>(config: &'a Config, provider_type: &str) -> Optio
 
 fn mask_api_key(key: &mut serde_json::Value) {
     if let Some(s) = key.as_str() {
-        if s.len() > 8 {
-            let prefix = &s[..3];
-            let suffix = &s[s.len()-4..];
+        // Real API keys are ASCII, but a hand-edited config could feed us a
+        // string with multi-byte chars at the cut points; slicing by byte
+        // index would panic. Walk by char so the prefix/suffix are always
+        // valid UTF-8.
+        let char_count = s.chars().count();
+        if char_count > 8 {
+            let prefix: String = s.chars().take(3).collect();
+            let suffix: String = s.chars().rev().take(4).collect::<Vec<_>>()
+                .into_iter().rev().collect();
             *key = serde_json::Value::String(format!("{}...{}", prefix, suffix));
         } else if !s.is_empty() {
             *key = serde_json::Value::String("...".to_string());
@@ -258,7 +383,9 @@ fn preserve_masked_keys(incoming: &mut serde_json::Value, existing: &serde_json:
 
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let mut value = serde_json::to_value(&state.config).map_err(|e| format!("Serialization error: {}", e))?;
+    let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+    let mut value = serde_json::to_value(&*cfg).map_err(|e| format!("Serialization error: {}", e))?;
+    drop(cfg);
     mask_api_keys(&mut value);
     Ok(value)
 }
@@ -323,9 +450,18 @@ async fn session_create(state: State<'_, AppState>) -> Result<session::store::Se
     drop(agent_guard);
 
     let new_id = uuid::Uuid::new_v4().to_string();
-    let provider_name = state.config.provider_name().to_string();
-    let default_model = state.config.default_model().to_string();
+    let (provider_name, default_model) = {
+        let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+        (cfg.provider_name().to_string(), cfg.default_model().to_string())
+    };
     state.session_store.create(&new_id, Some(&default_model), Some(&provider_name))?;
+
+    // Also park a dedicated AgentLoop for the new session in the
+    // multi-agent map. The desktop window itself still talks through
+    // state.agent, but a parallel caller (HTTP API, a second window)
+    // can address this session id directly without colliding on the
+    // shared mutex.
+    let _ = spawn_session_agent(&state, &new_id);
 
     {
         let mut sid = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?;
@@ -472,22 +608,29 @@ async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, 
 
     let now = chrono::Utc::now().timestamp();
 
-    let result = if job.mode == "script" {
+    // Inline async block so a failure (agent missing, send_message error,
+    // script non-zero exit) becomes an Err that mark_run still records,
+    // instead of `?`-returning before we touch the cron_jobs row.
+    let result: Result<String, String> = if job.mode == "script" {
         execute_script_job(&job.prompt)
     } else {
         let mut agent_guard = state.agent.lock().await;
-        let agent = agent_guard
-            .as_mut()
-            .ok_or_else(|| "Agent not initialized".to_string())?;
+        match agent_guard.as_mut() {
+            None => Err("Agent not initialized".to_string()),
+            Some(agent) => {
+                let soul = agent::soul::load_soul();
+                match agent
+                    .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref())
+                    .await
+                {
+                    Ok(response) => Ok(response.content),
+                    Err(e) => Err(format!("Agent error: {}", e)),
+                }
+            }
+        }
+    };
 
-        let response = agent
-                .send_message(&job.prompt, None, &[], &[], None, None)
-                            .await
-                            .map_err(|e| format!("Agent error: {}", e))?;
-                    Ok(response.content)
-                };
-
-                match &result {
+    match &result {
         Ok(output) => {
             state.cron_store.mark_run(&id, now, Some(output), None).ok();
         }
@@ -580,37 +723,16 @@ async fn task_clear(state: State<'_, AppState>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-async fn mcp_server_start(state: State<'_, AppState>) -> Result<String, String> {
-    let tool_defs: Vec<(String, String, serde_json::Value)> = {
-        let reg = tools::create_tool_registry(
-            state.config.stt.clone(),
-            state.config.tts.clone(),
-            state.task_store.clone(),
-            state.whatsapp.clone(),
-            state.mnemonics.clone(),
-            state.plugins.clone(),
-            state.mcp.clone(),
-        );
-        reg.definitions().iter().map(|d| {
-            (d.function.name.clone(), d.function.description.clone(), d.function.parameters.clone())
-        }).collect()
-    };
-
-    let handle = McpServerHandle::new();
-    let running = handle.running.clone();
-
-    std::thread::spawn(move || {
-        handle.run_stdio(tool_defs);
-    });
-
-    // Wait briefly to confirm startup
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    if *running.lock().unwrap() {
-        Ok("MCP server started on stdio. Connect any MCP client to this process.".to_string())
-    } else {
-        Err("MCP server failed to start".to_string())
-    }
+async fn mcp_server_start(_state: State<'_, AppState>) -> Result<String, String> {
+    // The Tauri desktop process owns stdin/stdout (webview IPC on some
+    // platforms uses them; on a packaged macOS .app they are not even
+    // attached to a tty). Trying to drive an MCP stdio server inside the
+    // same process either fights the webview for those FDs or writes
+    // JSON-RPC frames into the void. The correct shape is a separate
+    // headless `goblin-mcp` binary that links the same tool registry,
+    // but that binary doesn't exist yet, so refuse instead of pretending
+    // to start.
+    Err("MCP stdio server cannot run inside the desktop app — Tauri owns stdin/stdout. Build a headless goblin-mcp binary that links the same tool registry and run it standalone.".to_string())
 }
 
 #[tauri::command]
@@ -618,15 +740,21 @@ async fn save_config(
     state: State<'_, AppState>,
     config_json: serde_json::Value,
 ) -> Result<(), String> {
-    // For masked API keys, preserve the original values from the loaded config
+    // Masked api_key fields ("sk-...abcd") coming from the settings UI
+    // must be rehydrated from the on-disk value, otherwise we'd persist
+    // the mask string back to disk.
     let mut incoming = config_json;
-    let existing = serde_json::to_value(&state.config).map_err(|e| format!("Serialization error: {}", e))?;
-    preserve_masked_keys(&mut incoming, &existing);
+    {
+        let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+        let existing = serde_json::to_value(&*cfg).map_err(|e| format!("Serialization error: {}", e))?;
+        preserve_masked_keys(&mut incoming, &existing);
+    }
 
     let new_config: Config = serde_json::from_value(incoming)
         .map_err(|e| format!("Invalid config JSON: {}", e))?;
 
-    // Write to ~/.goblin/config.toml
+    // Persist to ~/.goblin/config.toml first — if disk write fails we
+    // surface the error instead of mutating in-memory state.
     let config_path = Config::config_path();
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)
@@ -637,24 +765,38 @@ async fn save_config(
     std::fs::write(&config_path, &toml_str)
         .map_err(|e| format!("Failed to write config to {:?}: {}", config_path, e))?;
 
-    // Update in-memory config
-    let mut agent_guard = state.agent.lock().await;
-    *agent_guard = init_agent(&new_config, tools::create_tool_registry(
+    // Rebuild the agent (provider, tool registry, system prompt) against
+    // the new config and swap it in atomically. Both the agent and the
+    // stored config are now live without needing a restart.
+    let tool_registry = Arc::new(tools::create_tool_registry(
         new_config.stt.clone(),
         new_config.tts.clone(),
+        new_config.tools.clone(),
         state.task_store.clone(),
         state.whatsapp.clone(),
         state.mnemonics.clone(),
         state.plugins.clone(),
         state.mcp.clone(),
     ));
+    let new_agent = init_agent(&new_config, tool_registry.clone());
 
-    // Update agent in state
-    // (config is behind Arc in AppState, so we need mutable access)
-    // Since we can't directly mutate state.config (it's owned by State), we drop and recreate.
-    // For now, the config is reloaded on next app start; agent is re-initialized with new config.
-    // The state.config is immutable; the user can restart to fully apply changes.
-    // Actually, let's update what we can: emit a notification.
+    // Refresh the registry shared by every parallel agent.
+    {
+        let mut reg_w = state.tool_registry.write().map_err(|e| format!("Registry lock: {}", e))?;
+        *reg_w = tool_registry;
+    }
+
+    let mut agent_guard = state.agent.lock().await;
+    *agent_guard = new_agent;
+    drop(agent_guard);
+
+    // Refresh the live notification feed against the new config before
+    // we swap the in-memory Config — otherwise an event emitted in this
+    // tick would still hit the old Telegram destination.
+    channel::init(new_config.channels.clone());
+
+    let mut cfg_w = state.config.write().map_err(|e| format!("Config lock: {}", e))?;
+    *cfg_w = new_config;
 
     Ok(())
 }
@@ -668,7 +810,8 @@ async fn test_connection(
 ) -> Result<serde_json::Value, String> {
     // If the frontend sent a masked key (contains "..."), resolve from stored config
     let resolved_key = if api_key.contains("...") {
-        resolve_key_from_config(&state.config, &provider_type).unwrap_or(&api_key).to_string()
+        let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
+        resolve_key_from_config(&cfg, &provider_type).unwrap_or(&api_key).to_string()
     } else {
         api_key
     };
@@ -692,8 +835,9 @@ async fn test_connection(
         Ok(resp) => {
             let status = resp.status().as_u16();
             if status == 200 || status == 401 {
-                // 401 = key invalid but endpoint reachable
-                let body = resp.text().await.unwrap_or_default();
+                // 401 = key invalid but endpoint reachable. We don't need
+                // the body for either branch — only the status decides
+                // success vs. unauthorized.
                 let ok = status == 200;
                 Ok(serde_json::json!({
                     "success": ok,
@@ -733,8 +877,12 @@ async fn test_connection(
 
 #[tauri::command]
 async fn whatsapp_start(state: State<'_, AppState>) -> Result<String, String> {
-    let app_dir = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current dir: {}", e))?
+    // CARGO_MANIFEST_DIR is /Users/.../goblin/src-tauri at compile time.
+    // Parent is the project root, which contains src-tauri/whatsapp-bridge.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let app_dir = manifest_dir
+        .parent()
+        .ok_or("Cannot resolve project root")?
         .to_str()
         .ok_or("Invalid path")?
         .to_string();
@@ -833,8 +981,9 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
                 let mut agent_guard = state.agent.lock().await;
                 match agent_guard.as_mut() {
                     Some(agent) => {
+                        let soul = agent::soul::load_soul();
                         agent
-                            .send_message(&job.prompt, None, &[], &[], None, None)
+                            .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref())
                             .await
                             .map(|r| r.content)
                             .map_err(|e| format!("Agent error: {}", e))
@@ -872,18 +1021,34 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
             ).ok();
 
             let prompt = task.prompt.clone().unwrap_or_else(|| task.name.clone());
-            let tool_registry = tools::create_tool_registry(
-                state.config.stt.clone(),
-                state.config.tts.clone(),
-                state.task_store.clone(),
-                state.whatsapp.clone(),
-                state.mnemonics.clone(),
-                state.plugins.clone(),
-                state.mcp.clone(),
-            );
+            // Snapshot the config under a short read lock so the subagent
+            // sees a consistent view even if save_config swaps it mid-loop.
+            let cfg_snapshot = match state.config.read() {
+                Ok(g) => g.clone(),
+                Err(e) => {
+                    eprintln!("[subagent] Config lock poisoned: {}", e);
+                    continue;
+                }
+            };
+            // Subagents reuse the shared registry instead of building
+            // their own — saves dozens of Arc clones per task and means
+            // shell_allowlist swaps land in subagents too.
+            let tool_registry = state.tool_registry.read()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| Arc::new(tools::create_tool_registry(
+                    cfg_snapshot.stt.clone(),
+                    cfg_snapshot.tts.clone(),
+                    cfg_snapshot.tools.clone(),
+                    state.task_store.clone(),
+                    state.whatsapp.clone(),
+                    state.mnemonics.clone(),
+                    state.plugins.clone(),
+                    state.mcp.clone(),
+                )));
 
-            if let Some(mut sub_agent) = init_agent(&state.config, tool_registry) {
-                match sub_agent.send_message(&prompt, None, &[], &[], None, None).await {
+            if let Some(mut sub_agent) = init_agent(&cfg_snapshot, tool_registry) {
+                let soul = agent::soul::load_soul();
+                match sub_agent.send_message(&prompt, None, &[], &[], None, None, soul.as_deref()).await {
                     Ok(response) => {
                         state.task_store.upsert(
                             &task.session_id, &task.id, &task.name, "done",
@@ -909,7 +1074,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
     }
 }
 
-fn init_agent(config: &Config, tool_registry: ToolRegistry) -> Option<AgentLoop> {
+fn init_agent(config: &Config, tool_registry: Arc<ToolRegistry>) -> Option<AgentLoop> {
     let max_tokens = config.agent.max_tokens;
     let provider: Box<dyn provider::Provider> = if let Some(openai_cfg) = &config.providers.openai {
         Box::new(OpenAIProvider {
@@ -994,6 +1159,8 @@ pub fn run() {
             tts: crate::config::TtsConfig::default(),
             mnemonics: crate::config::MnemonicsConfig::default(),
             mcp: crate::config::McpConfig::default(),
+            channels: crate::config::ChannelsConfig::default(),
+            http: crate::config::HttpConfig::default(),
         }
     });
 
@@ -1028,7 +1195,7 @@ pub fn run() {
         }
     }
 
-    let session_store = {
+    let session_store = Arc::new({
         let conn = rusqlite::Connection::open(db_path.to_str().unwrap_or("memory.db"))
             .unwrap_or_else(|e| {
                 eprintln!("Failed to open session db: {}", e);
@@ -1040,7 +1207,7 @@ pub fn run() {
             std::process::exit(1);
         }
         store
-    };
+    });
 
     let cron_store = {
         let conn = rusqlite::Connection::open(db_path.to_str().unwrap_or("memory.db"))
@@ -1120,13 +1287,19 @@ pub fn run() {
     let tool_registry = tools::create_tool_registry(
         config.stt.clone(),
         config.tts.clone(),
+        config.tools.clone(),
         task_store.clone(),
         whatsapp_bridge.clone(),
         mnemonics_client.clone(),
         plugin_registry.clone(),
         mcp_hub.clone(),
     );
-    let agent = init_agent(&config, tool_registry);
+    let tool_registry = Arc::new(tool_registry);
+    let agent = init_agent(&config, tool_registry.clone());
+
+    // Wire the outbound notification feed (Telegram, future channels).
+    // Idempotent — save_config calls init() again with the new config.
+    channel::init(config.channels.clone());
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let provider_name = config.provider_name().to_string();
@@ -1137,7 +1310,49 @@ pub fn run() {
 
     compact::compact_if_needed(&memory, config.memory.auto_compact_days as i32);
 
-    if agent.is_none() {
+    let agent_was_none = agent.is_none();
+
+    // Build the shared Arcs that both Tauri AppState and the HTTP API
+    // (if enabled) hold a reference to. Storing them as Arc means a
+    // call coming through `POST /message` and one coming through the
+    // desktop send_message command operate on the exact same agent
+    // and session id — no shadow state, no drift.
+    let agent_arc = Arc::new(Mutex::new(agent));
+    let config_arc = Arc::new(std::sync::RwLock::new(config));
+    let session_id_arc = Arc::new(StdMutex::new(session_id));
+    let memory_arc = Arc::new(memory);
+    let tool_registry_arc = Arc::new(std::sync::RwLock::new(tool_registry));
+
+    // Seed the multi-agent map with the bootstrap session so parallel
+    // sessions added later don't accidentally shadow it.
+    let agents_map: std::collections::HashMap<String, Arc<Mutex<Option<AgentLoop>>>> = {
+        let mut m = std::collections::HashMap::new();
+        let sid = session_id_arc.lock().map(|g| g.clone()).unwrap_or_default();
+        m.insert(sid, agent_arc.clone());
+        m
+    };
+    let agents_arc = Arc::new(std::sync::RwLock::new(agents_map));
+
+    // Spawn HTTP API server if enabled in config.
+    {
+        let http_cfg = config_arc.read().map(|c| c.http.clone()).unwrap_or_default();
+        if http_cfg.enabled {
+            let http_state = http::HttpState {
+                agent: agent_arc.clone(),
+                config: config_arc.clone(),
+                memory: memory_arc.clone(),
+                session_id: session_id_arc.clone(),
+                session_store: session_store.clone(),
+            };
+            tokio::spawn(async move {
+                if let Err(e) = http::serve(http_state, http_cfg).await {
+                    eprintln!("[http] server error: {}", e);
+                }
+            });
+        }
+    }
+
+    if agent_was_none {
         eprintln!(
             "No provider configured. Create ~/.goblin/config.toml with your API keys."
         );
@@ -1148,16 +1363,19 @@ pub fn run() {
         eprintln!("models = [\"deepseek-v4-flash\", \"deepseek-v4-pro\"]");
     } else {
         println!("Agent initialized with provider: {}", provider_name);
-        println!("Session: {}", session_id);
+        let sid_for_log = session_id_arc.lock().map(|g| g.clone()).unwrap_or_default();
+        println!("Session: {}", sid_for_log);
     }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            agent: Mutex::new(agent),
-            config,
-            memory,
-            session_id: StdMutex::new(session_id),
+            agent: agent_arc,
+            agents: agents_arc,
+            tool_registry: tool_registry_arc,
+            config: config_arc,
+            memory: memory_arc,
+            session_id: session_id_arc,
             session_store,
             cron_store,
             task_store,
@@ -1168,6 +1386,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             send_message,
+            send_message_in_session,
             get_config,
             clear_conversation,
             memory_add,
@@ -1419,15 +1638,17 @@ mod tests {
             tts: crate::config::TtsConfig::default(),
             mnemonics: crate::config::MnemonicsConfig::default(),
             mcp: crate::config::McpConfig::default(),
+            channels: crate::config::ChannelsConfig::default(),
+            http: crate::config::HttpConfig::default(),
         };
 
         let tool_registry = tools::create_tool_registry(
-            config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
+            config.stt.clone(), config.tts.clone(), config.tools.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
         );
 
-        let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
+        let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
         let result = agent
-            .send_message("Analyze this code for bugs", None, &[], &[], None, None)
+            .send_message("Analyze this code for bugs", None, &[], &[], None, None, None)
             .await;
 
         assert!(result.is_ok());
@@ -1506,15 +1727,17 @@ mod tests {
                 tts: crate::config::TtsConfig::default(),
                 mnemonics: crate::config::MnemonicsConfig::default(),
                 mcp: crate::config::McpConfig::default(),
+                channels: crate::config::ChannelsConfig::default(),
+            http: crate::config::HttpConfig::default(),
             };
 
             let tool_registry = tools::create_tool_registry(
-                config.stt.clone(), config.tts.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
+                config.stt.clone(), config.tts.clone(), config.tools.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
             );
 
-            let mut agent = AgentLoop::new(config, Box::new(mock), tool_registry);
+            let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
             let prompt = task.prompt.clone().unwrap_or_default();
-            let result = agent.send_message(&prompt, None, &[], &[], None, None).await.unwrap();
+            let result = agent.send_message(&prompt, None, &[], &[], None, None, None).await.unwrap();
 
             store.upsert(&task.session_id, &task.id, &task.name, "done", Some(&result.content)).unwrap();
 

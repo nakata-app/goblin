@@ -3,6 +3,8 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   makeInMemoryStore,
+  fetchLatestBaileysVersion,
+  Browsers,
   proto,
 } = require("@whiskeysockets/baileys");
 const express = require("express");
@@ -98,14 +100,25 @@ app.get("/health", (_req, res) => {
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  let waVersion;
+  try {
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    waVersion = version;
+    console.log(`[bridge] WA web version ${version.join(".")} (latest=${isLatest})`);
+  } catch (e) {
+    console.log(`[bridge] fetchLatestBaileysVersion failed, using baileys default: ${e.message}`);
+  }
 
   sock = makeWASocket({
     auth: state,
+    ...(waVersion ? { version: waVersion } : {}),
     printQRInTerminal: false,
-    browser: ["Goblin Desktop", "Chrome", "1.0.0"],
-    getMessage: async (key) => {
-      // stub — not implementing message history sync for now
-      return undefined;
+    browser: Browsers.macOS("Desktop"),
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    shouldSyncHistoryMessage: () => false,
+    getMessage: async (_key) => {
+      return { conversation: "" };
     },
   });
 

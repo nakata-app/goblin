@@ -450,8 +450,13 @@ pub async fn handle_browser_console(args: serde_json::Value) -> Result<String, S
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...\n[truncated {} -> {} chars]", &s[..max_len], s.len(), max_len)
+        return s.to_string();
     }
+    // max_len is a byte budget; back off to the nearest char boundary so
+    // a multi-byte UTF-8 sequence at the cut point never panics.
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...\n[truncated {} -> {} chars]", &s[..end], s.len(), max_len)
 }

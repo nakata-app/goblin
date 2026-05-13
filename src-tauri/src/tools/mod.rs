@@ -7,7 +7,14 @@ pub mod git;
 pub mod media;
 pub mod meta;
 pub mod vault;
+// `mcp` is trimmed down to just `mcp_install` (a discovery helper that
+// prints install instructions). The old connect/list/call stubs were
+// superseded by the auto-booting McpHub in src/mcp/mod.rs.
+// `mcp_server` is the stdio JSON-RPC handle a future headless
+// `goblin-mcp` binary will link against; unused in the desktop build
+// but kept so the headless target can re-enable it without a rewrite.
 pub mod mcp;
+#[allow(dead_code)]
 pub mod mcp_server;
 pub mod skills;
 pub mod peer;
@@ -15,6 +22,7 @@ pub mod compactor;
 pub mod sandbox;
 
 use crate::config::SttConfig;
+use crate::config::ToolsConfig;
 use crate::config::TtsConfig;
 use crate::task::TaskStore;
 
@@ -74,12 +82,18 @@ impl ToolRegistry {
 pub fn create_tool_registry(
     stt: SttConfig,
     tts: TtsConfig,
+    tools_cfg: ToolsConfig,
     task_store: TaskStore,
     whatsapp: std::sync::Arc<crate::whatsapp::WhatsappBridge>,
     mnemonics: Option<std::sync::Arc<crate::mnemonics::MnemonicsClient>>,
     plugins: std::sync::Arc<crate::plugin::PluginRegistry>,
     mcp_hub: std::sync::Arc<crate::mcp::McpHub>,
 ) -> ToolRegistry {
+    // Install (or refresh) the live shell guardrails. create_tool_registry
+    // is called once at startup and again by save_config when the user
+    // edits ~/.goblin/config.toml from the settings panel.
+    shell::apply_shell_guards(&tools_cfg.shell_allowlist, &tools_cfg.shell_blocklist);
+
     let mut registry = ToolRegistry::new();
 
     let stt_api_key = stt.api_key.clone();

@@ -60,7 +60,11 @@ struct StreamChunk {
 #[derive(Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
+    // finish_reason on stream chunks is unused (we react to the [DONE]
+    // sentinel instead); kept so serde does not fail on providers that
+    // include it.
     #[serde(default)]
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 

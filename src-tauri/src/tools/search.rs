@@ -106,7 +106,11 @@ pub async fn handle_grep(args: serde_json::Value) -> Result<String, String> {
                 if regex.is_match(line) {
                     let display = entry_path.to_string_lossy();
                     let trunc_line = if line.len() > 200 {
-                        format!("{}...", &line[..200])
+                        let mut end = 200;
+                        while end > 0 && !line.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}...", &line[..end])
                     } else {
                         line.to_string()
                     };

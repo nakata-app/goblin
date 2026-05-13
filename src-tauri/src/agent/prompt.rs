@@ -4,6 +4,7 @@ pub fn build_system_prompt(
     project_context: Option<&str>,
     memories: &[String],
     learned: &[String],
+    soul: Option<&str>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -11,6 +12,20 @@ pub fn build_system_prompt(
     parts.push("You are Goblin. A desktop AI agent running in a Tauri app on the user's machine. You are powered by DeepSeek. You are not Claude, not ChatGPT. Never claim to be another AI.".to_string());
     parts.push("You have access to tools: file system, shell, web, browser, git, search, media, MCP, and more. Use them to get things done.".to_string());
     parts.push("".to_string());
+
+    // SOUL — persistent persona contract. Lives at ~/.goblin/SOUL.md and
+    // is injected verbatim into every system prompt. This is how the
+    // user pins voice, working style, hard prohibitions, and any other
+    // policy that must survive across sessions and config swaps. Empty
+    // file or missing file → skipped silently.
+    if let Some(s) = soul {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            parts.push(format!("\n## SOUL — Persistent Persona Contract\n{}\n", trimmed));
+            parts.push("IMPORTANT: The SOUL block above is a hard contract. It overrides any of the default IMPORTANT rules below where they conflict.".to_string());
+            parts.push("".to_string());
+        }
+    }
 
     // Core behavior — Claude Code style: work-focused, concise
     parts.push("IMPORTANT: Be concise and work-focused. No fluff, no filler. Answer directly. Communicate in the user's language.".to_string());
@@ -91,17 +106,18 @@ mod tests {
 
     #[test]
     fn system_prompt_base_only() {
-        let prompt = build_system_prompt(None, &[], &[]);
+        let prompt = build_system_prompt(None, &[], &[], None);
         assert!(prompt.contains("Goblin"));
         assert!(prompt.contains("Tauri app"));
         assert!(!prompt.contains("Project Context"));
         assert!(!prompt.contains("Relevant Memories"));
         assert!(!prompt.contains("User Preferences"));
+        assert!(!prompt.contains("SOUL"));
     }
 
     #[test]
     fn system_prompt_with_project_context() {
-        let prompt = build_system_prompt(Some("My Project v2"), &[], &[]);
+        let prompt = build_system_prompt(Some("My Project v2"), &[], &[], None);
         assert!(prompt.contains("Project Context"));
         assert!(prompt.contains("My Project v2"));
     }
@@ -109,7 +125,7 @@ mod tests {
     #[test]
     fn system_prompt_with_memories() {
         let mems = vec!["User prefers Rust".to_string(), "Use dark theme".to_string()];
-        let prompt = build_system_prompt(None, &mems, &[]);
+        let prompt = build_system_prompt(None, &mems, &[], None);
         assert!(prompt.contains("Relevant Memories"));
         assert!(prompt.contains("User prefers Rust"));
         assert!(prompt.contains("Use dark theme"));
@@ -118,7 +134,7 @@ mod tests {
     #[test]
     fn system_prompt_with_learned() {
         let learned = vec!["Avoid npm".to_string()];
-        let prompt = build_system_prompt(None, &[], &learned);
+        let prompt = build_system_prompt(None, &[], &learned, None);
         assert!(prompt.contains("User Preferences"));
         assert!(prompt.contains("Avoid npm"));
     }
@@ -127,10 +143,26 @@ mod tests {
     fn system_prompt_all_fields() {
         let mems = vec!["m1".to_string()];
         let learned = vec!["l1".to_string()];
-        let prompt = build_system_prompt(Some("ctx"), &mems, &learned);
+        let prompt = build_system_prompt(Some("ctx"), &mems, &learned, Some("SOUL body"));
         assert!(prompt.contains("Project Context"));
         assert!(prompt.contains("Relevant Memories"));
         assert!(prompt.contains("User Preferences"));
+        assert!(prompt.contains("SOUL"));
+        assert!(prompt.contains("SOUL body"));
+    }
+
+    #[test]
+    fn system_prompt_soul_only() {
+        let prompt = build_system_prompt(None, &[], &[], Some("Speak Turkish. No em-dash."));
+        assert!(prompt.contains("Persistent Persona Contract"));
+        assert!(prompt.contains("Speak Turkish"));
+        assert!(prompt.contains("hard contract"));
+    }
+
+    #[test]
+    fn system_prompt_empty_soul_skipped() {
+        let prompt = build_system_prompt(None, &[], &[], Some("   \n  "));
+        assert!(!prompt.contains("SOUL"));
     }
 
     #[test]
