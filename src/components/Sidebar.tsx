@@ -35,6 +35,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 export function Sidebar({ isOpen, onToggle, sessions, activeSessionId, onSelectSession }: SidebarProps) {
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     invoke<Record<string, unknown>>('get_config')
@@ -120,11 +121,29 @@ export function Sidebar({ isOpen, onToggle, sessions, activeSessionId, onSelectS
             Recent Sessions
             <span className="sb-count">{sessions.length}</span>
           </div>
+          <div className="sb-search-row">
+            <input
+              className="sb-search-input"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search sessions..."
+            />
+            {query && (
+              <button className="sb-search-clear" onClick={() => setQuery('')}>×</button>
+            )}
+          </div>
           <div className="sb-session-list">
-            {sessions.length === 0 ? (
-              <div className="sb-empty">No sessions yet</div>
-            ) : (
-              sessions.slice(0, 10).map((s) => (
+            {(() => {
+              const q = query.trim().toLowerCase();
+              const filtered = q
+                ? sessions.filter((s) =>
+                    (s.title ?? '').toLowerCase().includes(q) ||
+                    (s.model ?? '').toLowerCase().includes(q))
+                : sessions;
+              if (filtered.length === 0) {
+                return <div className="sb-empty">{q ? `No matches for "${query}"` : 'No sessions yet'}</div>;
+              }
+              return filtered.slice(0, 30).map((s) => (
                 <div
                   key={s.id}
                   className={`sb-session-item ${s.id === activeSessionId ? 'sb-session-active' : ''}`}
@@ -135,8 +154,8 @@ export function Sidebar({ isOpen, onToggle, sessions, activeSessionId, onSelectS
                     {s.messageCount} msgs · {s.model || '?'}
                   </span>
                 </div>
-              ))
-            )}
+              ));
+            })()}
           </div>
         </div>
 

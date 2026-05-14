@@ -6,9 +6,10 @@ interface InputBarProps {
   onSend: () => void;
   disabled?: boolean;
   onFileAttach?: (file: File) => void;
+  onOpenPalette?: () => void;
 }
 
-export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach }: InputBarProps) {
+export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach, onOpenPalette }: InputBarProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
@@ -35,12 +36,37 @@ export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach 
       if (e.key === 'Escape') {
         inputRef.current?.blur();
       }
+      // Slash on empty input -> open command palette (intuitive shortcut)
+      if (e.key === '/' && !input && onOpenPalette) {
+        e.preventDefault();
+        onOpenPalette();
+      }
     },
-    [onSend, disabled]
+    [onSend, disabled, input, onOpenPalette]
   );
 
+  const [dragOver, setDragOver] = useState(false);
+
   return (
-    <div className={`input-area ${focused ? 'input-focused' : ''}`}>
+    <div
+      className={`input-area ${focused ? 'input-focused' : ''}${dragOver ? ' input-dragover' : ''}`}
+      onDragOver={(e) => {
+        if (Array.from(e.dataTransfer.types).includes('Files')) {
+          e.preventDefault();
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        const f = e.dataTransfer.files?.[0];
+        if (f) {
+          setAttachedFileName(f.name);
+          onFileAttach?.(f);
+        }
+      }}
+    >
       {attachedFileName && (
         <div className="attach-preview">
           <span className="attach-name">{attachedFileName}</span>
@@ -91,8 +117,10 @@ export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach 
           <span className="send-btn-icon">↑</span>
         </button>
       </div>
-      <div className="input-hint">
-        <kbd>Enter</kbd> send &middot; <kbd>Esc</kbd> cancel
+      <div className={`input-hint ${focused || !input ? 'input-hint-show' : ''}`}>
+        <kbd>Enter</kbd> send <span className="input-hint-sep">·</span>
+        <kbd>⇧Enter</kbd> newline <span className="input-hint-sep">·</span>
+        <kbd>⌘K</kbd> commands
       </div>
     </div>
   );

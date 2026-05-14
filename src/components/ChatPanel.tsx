@@ -1,5 +1,14 @@
 import { useRef, useEffect, memo } from 'react';
 import type { Message } from '../types';
+import { useAgentStore } from '../stores/agentStore';
+import { useChatStore } from '../stores/chatStore';
+
+const STARTER_PROMPTS = [
+  '🗂️ Bu repo\'yu özetle, mimari bir bakış ver',
+  '🐛 Son commit\'te ne değişti, breaking change var mı?',
+  '🔍 TODO ve FIXME yorumlarını listele',
+  '🧪 Eksik unit test\'leri tespit et',
+];
 
 export function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
@@ -10,9 +19,15 @@ function renderChat(text: string): string {
 
   // Extract fenced code blocks to protect them from inline replacements
   const blocks: string[] = [];
-  out = out.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
-    void _lang;
-    const html = `<pre class="chat-code-block"><code class="chat-code">${esc(code.trim())}</code></pre>`;
+  out = out.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, lang, code) => {
+    const escaped = esc(code.trim());
+    const dataB64 = btoa(unescape(encodeURIComponent(code.trim())));
+    const html =
+      `<pre class="chat-code-block">` +
+      `<button class="chat-code-copy" data-copy="${dataB64}" title="Copy">📋</button>` +
+      (lang ? `<span class="chat-code-lang">${esc(lang)}</span>` : '') +
+      `<code class="chat-code">${escaped}</code>` +
+      `</pre>`;
     blocks.push(html);
     return `\x00BLOCK${blocks.length - 1}\x00`;
   });
@@ -79,11 +94,18 @@ function randomGreeting(): string {
 
 interface ChatPanelProps {
   messages: Message[];
+  onContinue?: () => void;
 }
 
-export const ChatPanel = memo(function ChatPanel({ messages }: ChatPanelProps) {
+export const ChatPanel = memo(function ChatPanel({ messages, onContinue }: ChatPanelProps) {
   const chatRef = useRef<HTMLDivElement>(null);
   const shouldAutoScroll = useRef(true);
+  const goblinState = useAgentStore((s) => s.goblinState);
+  const activeTool = useAgentStore((s) => s.activeTool);
+  const lastMessage = messages[messages.length - 1];
+  const showThinkingBubble =
+    (goblinState === 'thinking' || goblinState === 'running' || goblinState === 'streaming') &&
+    (!lastMessage || lastMessage.role === 'user');
 
   useEffect(() => {
     const el = chatRef.current;
@@ -98,13 +120,43 @@ export const ChatPanel = memo(function ChatPanel({ messages }: ChatPanelProps) {
     shouldAutoScroll.current = isNearBottom;
   }).current;
 
+  const handleClick = (e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    const btn = t.closest('.chat-code-copy') as HTMLButtonElement | null;
+    if (btn) {
+      const b64 = btn.getAttribute('data-copy') || '';
+      try {
+        const code = decodeURIComponent(escape(atob(b64)));
+        navigator.clipboard?.writeText(code).then(() => {
+          const orig = btn.textContent;
+          btn.textContent = '✓';
+          setTimeout(() => { btn.textContent = orig; }, 1200);
+        });
+      } catch { /* noop */ }
+    }
+  };
+
   return (
-    <div className="chat-area" ref={chatRef} onScroll={handleScroll}>
+    <div className="chat-area" ref={chatRef} onScroll={handleScroll} onClick={handleClick}>
       {messages.length === 0 && (
         <div className="chat-empty">
           <div className="chat-empty-icon">👺</div>
           <div className="chat-empty-title">Goblin ready</div>
           <div className="chat-empty-sub">{randomGreeting()}</div>
+          <div className="chat-starters">
+            {STARTER_PROMPTS.map((p) => (
+              <button
+                key={p}
+                className="chat-starter"
+                onClick={() => {
+                  const text = p.replace(/^[^\s]+\s/, '');
+                  useChatStore.getState().setInput(text);
+                }}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {messages.map((msg) => (
@@ -114,12 +166,28 @@ export const ChatPanel = memo(function ChatPanel({ messages }: ChatPanelProps) {
             {msg.toolCalls && msg.toolCalls.length > 0 && (
               <div className="message-tools">
                 {msg.toolCalls.map((tc) => (
-                  <div key={tc.id} className={`tool-badge tool-${tc.status}`}>
+                  <button
+                    key={tc.id}
+                    className={`tool-badge tool-${tc.status}`}
+                    onClick={() => {
+                      const name = tc.name || tc.function?.name || 'tool';
+                      const argsStr = JSON.stringify(tc.args ?? {}, null, 2);
+                      const resStr = tc.result ? tc.result.slice(0, 4000) : '(no result captured)';
+                      const md =
+                        `## Tool: \`${name}\`\n\n` +
+                        `**Status:** ${tc.status}\n\n` +
+                        `### Args\n\n\`\`\`json\n${argsStr}\n\`\`\`\n\n` +
+                        `### Result\n\n\`\`\`\n${resStr}\n\`\`\``;
+                      useChatStore.getState().setRightPanel(md);
+                      useChatStore.getState().setActiveTab('output');
+                    }}
+                    title="Click for details"
+                  >
                     <span className="tool-badge-icon">
                       {tc.status === 'running' ? '⋯' : tc.status === 'done' ? '✓' : tc.status === 'error' ? '✗' : '○'}
                     </span>
                     <span className="tool-badge-name">{tc.name || tc.function?.name}</span>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -129,6 +197,25 @@ export const ChatPanel = memo(function ChatPanel({ messages }: ChatPanelProps) {
           </div>
         </div>
       ))}
+      {!showThinkingBubble && lastMessage?.role === 'assistant' && goblinState === 'idle' && onContinue && (
+        <div className="continue-row">
+          <button className="continue-chip" onClick={onContinue} title="Continue the response">
+            ↻ Continue
+          </button>
+        </div>
+      )}
+      {showThinkingBubble && (
+        <div className="message message-assistant message-thinking" aria-live="polite">
+          <div className="message-content thinking-bubble">
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            {activeTool && (
+              <span className="thinking-tool">{activeTool}</span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 });

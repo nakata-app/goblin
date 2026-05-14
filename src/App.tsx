@@ -22,6 +22,47 @@ import { TabBar } from './components/TabBar';
 import type { GoblinState } from './types';
 import './styles/app.css';
 
+const MODEL_GROUPS: { label: string; options: { id: string; label: string }[] }[] = [
+  {
+    label: 'DeepSeek',
+    options: [
+      { id: 'deepseek-v4-flash', label: 'Fast' },
+      { id: 'deepseek-v4-pro', label: 'Pro' },
+    ],
+  },
+  {
+    label: 'Anthropic',
+    options: [
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+      { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+    ],
+  },
+  {
+    label: 'NVIDIA NIM',
+    options: [
+      { id: 'deepseek-ai/deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+    ],
+  },
+  {
+    label: 'GLM',
+    options: [
+      { id: 'glm-4.6-flash', label: 'Flash' },
+      { id: 'glm-4.6-air', label: 'Air' },
+    ],
+  },
+];
+
+function shortLabel(id: string): string {
+  if (id.includes('opus')) return 'Opus';
+  if (id.includes('sonnet')) return 'Sonnet';
+  if (id.includes('haiku')) return 'Haiku';
+  if (id.includes('pro')) return 'Pro';
+  if (id.includes('air')) return 'Air';
+  if (id.includes('flash')) return 'Fast';
+  return id.split('/').pop() || id;
+}
+
 const GOBLIN_STATE_TEXT: Record<GoblinState, string> = {
   idle: 'Ready',
   thinking: 'Thinking...',
@@ -119,6 +160,26 @@ function App() {
   const [configOpen, setConfigOpen] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [whatsappOpen, setWhatsappOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [onboardOpen, setOnboardOpen] = useState(() => {
+    try { return localStorage.getItem('goblin.onboarded') !== '1'; } catch { return true; }
+  });
+  const dismissOnboarding = useCallback(() => {
+    setOnboardOpen(false);
+    try { localStorage.setItem('goblin.onboarded', '1'); } catch { /* noop */ }
+  }, []);
+
+  const [costWarn, setCostWarn] = useState<string | null>(null);
+  const lastWarnedRef = useRef(0);
+  useEffect(() => {
+    const cap = parseFloat(localStorage.getItem('goblin.costCap') || '0.50');
+    if (!Number.isFinite(cap) || cap <= 0) return;
+    if (cost >= cap && lastWarnedRef.current < cap) {
+      lastWarnedRef.current = cap;
+      setCostWarn(`Session cost passed $${cap.toFixed(2)} (now $${cost.toFixed(4)})`);
+    }
+  }, [cost]);
 
   // Fetch sessions on mount and show picker if there are recent ones.
   // Also resolve the backend's current session id so the first send
@@ -153,8 +214,21 @@ function App() {
     });
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [leftPanelWidth, setLeftPanelWidth] = useState(32);
-  const [rightPanelWidth, setRightPanelWidth] = useState(30);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() => {
+    const v = parseFloat(localStorage.getItem('goblin.leftPanelWidth') || '');
+    return Number.isFinite(v) && v >= 16 && v <= 40 ? v : 32;
+  });
+  const [rightPanelWidth, setRightPanelWidth] = useState(() => {
+    const v = parseFloat(localStorage.getItem('goblin.rightPanelWidth') || '');
+    return Number.isFinite(v) && v >= 18 && v <= 50 ? v : 30;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('goblin.leftPanelWidth', String(leftPanelWidth));
+  }, [leftPanelWidth]);
+  useEffect(() => {
+    localStorage.setItem('goblin.rightPanelWidth', String(rightPanelWidth));
+  }, [rightPanelWidth]);
   const appRef = useRef<HTMLDivElement>(null);
   const resizingRef = useRef<'left' | 'right' | null>(null);
   const startXRef = useRef(0);
@@ -409,9 +483,25 @@ function App() {
         e.preventDefault();
         setSidebarOpen(true);
       }
+      if (mod && e.key === '/') {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      }
+      // ⌘1-9 — switch to tab N (1-indexed)
+      if (mod && /^[1-9]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        const tabs = useTabsStore.getState().openTabs;
+        const target = tabs[idx];
+        if (target) {
+          e.preventDefault();
+          handleSelectSession(target);
+        }
+      }
       if (e.key === 'Escape') {
         setCmdOpen(false);
         setSidebarOpen(false);
+        setShortcutsOpen(false);
+        setModelMenuOpen(false);
       }
     };
     window.addEventListener('keydown', handler);
@@ -429,6 +519,46 @@ function App() {
       />
 
       {cmdOpen && <CommandPalette onCommand={handleCommand} onClose={() => setCmdOpen(false)} />}
+
+      {costWarn && (
+        <div className="cost-toast">
+          <span className="cost-toast-icon">⚠</span>
+          <span className="cost-toast-text">{costWarn}</span>
+          <button className="cost-toast-action" onClick={() => { setConfigOpen(true); setCostWarn(null); }}>Adjust cap</button>
+          <button className="cost-toast-close" onClick={() => setCostWarn(null)}>×</button>
+        </div>
+      )}
+
+      {onboardOpen && !showSessionPicker && (
+        <div className="onboard-toast">
+          <div className="onboard-step"><span className="onboard-num">1</span> Choose a model — header pill toggles <strong>Fast</strong> / <strong>Pro</strong></div>
+          <div className="onboard-step"><span className="onboard-num">2</span> Hit <kbd>⌘K</kbd> for the command palette, or just type</div>
+          <div className="onboard-step"><span className="onboard-num">3</span> Press <kbd>⌘/</kbd> any time to see all shortcuts</div>
+          <button className="onboard-dismiss" onClick={dismissOnboarding}>Got it</button>
+        </div>
+      )}
+
+      {shortcutsOpen && (
+        <div className="shortcuts-overlay" onClick={() => setShortcutsOpen(false)}>
+          <div className="shortcuts-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="shortcuts-header">
+              <span>Keyboard Shortcuts</span>
+              <button className="shortcuts-close" onClick={() => setShortcutsOpen(false)}>×</button>
+            </div>
+            <div className="shortcuts-grid">
+              <div className="shortcuts-row"><kbd>⌘K</kbd><span>Command palette</span></div>
+              <div className="shortcuts-row"><kbd>⌘N</kbd><span>New session</span></div>
+              <div className="shortcuts-row"><kbd>⌘⇧S</kbd><span>Sessions sidebar</span></div>
+              <div className="shortcuts-row"><kbd>⌘/</kbd><span>This cheat sheet</span></div>
+              <div className="shortcuts-row"><kbd>⌘1</kbd>–<kbd>9</kbd><span>Switch to tab N</span></div>
+              <div className="shortcuts-row"><kbd>/</kbd><span>Open palette (empty input)</span></div>
+              <div className="shortcuts-row"><kbd>Enter</kbd><span>Send message</span></div>
+              <div className="shortcuts-row"><kbd>⇧Enter</kbd><span>Newline in input</span></div>
+              <div className="shortcuts-row"><kbd>Esc</kbd><span>Close panel / cancel</span></div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfigPanel
         isOpen={configOpen}
@@ -454,6 +584,39 @@ function App() {
         <div className="panel-header">
           <span className="panel-header-title">goblin</span>
           <div className="panel-header-actions">
+            <div className="model-picker">
+              <button
+                className={`header-pill ${model.includes('pro') || model.includes('opus') || model.includes('sonnet') ? 'header-pill-pro' : 'header-pill-fast'}`}
+                onClick={() => setModelMenuOpen((v) => !v)}
+                title={`Current: ${model}`}
+              >
+                <span className="header-pill-dot" />
+                {shortLabel(model)}
+                <span className="header-pill-caret">▾</span>
+              </button>
+              {modelMenuOpen && (
+                <div className="model-menu" onClick={(e) => e.stopPropagation()}>
+                  {MODEL_GROUPS.map((g) => (
+                    <div key={g.label} className="model-group">
+                      <div className="model-group-label">{g.label}</div>
+                      {g.options.map((opt) => (
+                        <button
+                          key={opt.id}
+                          className={`model-item ${model === opt.id ? 'model-item-active' : ''}`}
+                          onClick={() => {
+                            useAgentStore.getState().setModel(opt.id);
+                            setModelMenuOpen(false);
+                          }}
+                        >
+                          <span className="model-item-name">{opt.label}</span>
+                          <span className="model-item-id">{opt.id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <button className="header-btn" onClick={() => setSidebarOpen(true)}>sessions</button>
             <button className="header-btn" onClick={() => setCmdOpen(true)}>⌘K</button>
             <button className="header-btn" onClick={() => setConfigOpen(true)} title="Settings">⚙</button>
@@ -469,7 +632,10 @@ function App() {
           onNew={handleNewSession}
         />
 
-        <ChatPanel messages={messages} />
+        <ChatPanel
+          messages={messages}
+          onContinue={() => sendMessage('Continue.')}
+        />
 
         <GoblinCharacter
           emotionalState={emotionalState}
@@ -481,6 +647,13 @@ function App() {
           input={input}
           onInputChange={setInput}
           onSend={handleSend}
+          onOpenPalette={() => setCmdOpen(true)}
+          onFileAttach={(file) => {
+            const kb = (file.size / 1024).toFixed(1);
+            const note = `📎 ${file.name} (${file.type || 'unknown'}, ${kb} KB)`;
+            const cur = useChatStore.getState().input;
+            useChatStore.getState().setInput(cur ? `${cur}\n${note}\n` : `${note}\n`);
+          }}
         />
       </div>
 
@@ -514,6 +687,14 @@ function App() {
         tokensOut={tokensOut}
         activeTool={activeTool}
         error={error}
+        onRetry={() => {
+          const msgs = useChatStore.getState().messages;
+          const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+          if (lastUser) {
+            useAgentStore.getState().setError(null);
+            sendMessage(lastUser.content);
+          }
+        }}
       />
     </div>
   );

@@ -10,6 +10,7 @@ interface StatusBarProps {
   tokensOut: number;
   activeTool: string | null;
   error: string | null;
+  onRetry?: () => void;
 }
 
 export function StatusBar({
@@ -22,6 +23,7 @@ export function StatusBar({
   tokensOut,
   activeTool,
   error,
+  onRetry,
 }: StatusBarProps) {
   return (
     <div className="status-bar">
@@ -45,6 +47,9 @@ export function StatusBar({
         {error && (
           <span className="status-error-text" title={error}>
             {error.length > 40 ? error.slice(0, 40) + '...' : error}
+            {onRetry && (
+              <button className="status-retry-btn" onClick={onRetry} title="Retry last message">⟳</button>
+            )}
           </span>
         )}
       </div>
