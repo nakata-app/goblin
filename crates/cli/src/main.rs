@@ -753,7 +753,7 @@ async fn run() -> Result<()> {
             };
             let workspace = std::fs::canonicalize(&workspace)
                 .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
-            print_banner_with_model(None);
+            
             return tasks::run_tasks_command(&words[1..], &workspace);
         }
     }
@@ -1028,7 +1028,7 @@ async fn run() -> Result<()> {
     // it because they render on the main screen.
     let tui_mode = !cli.repl && cli.ide.is_none() && cli.prompt.is_none();
     if !tui_mode {
-        print_banner_with_model(Some(&model));
+        
     }
 
     let mut registry = if cli.no_tools {
@@ -1818,7 +1818,7 @@ async fn run_deploy_command(target_arg: Option<&str>, cli: &Cli) -> Result<()> {
     let workspace = std::fs::canonicalize(&workspace)
         .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
 
-    print_banner_with_model(None);
+    
 
     let target = match target_arg {
         Some(name) => deploy::DeployTarget::parse(name).with_context(|| {
