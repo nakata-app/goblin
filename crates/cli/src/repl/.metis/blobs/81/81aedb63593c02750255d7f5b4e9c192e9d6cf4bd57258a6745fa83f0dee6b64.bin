@@ -1,0 +1,59 @@
+[TOOL_RESULT]
+[stdout]
+     212 /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
+---
+//! REPL agent construction — threads the config, permission, tools,
+//! and UI widgets into a ready-to-run `Agent<a>`.
+//!
+//! Kept separate from repl.rs so the turn loop there can focus on
+//! dispatch instead of wiring. `build_agent` is the only public entry;
+//! everything it returns is standard `metis_core` types.
+
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result};
+use metis_api::{ChatProvider, StreamEvent};
+use metis_core::{Agent, AgentConfig, Permission, SessionStore, ToolContext, ToolRegistry};
+
+use crate::agent_spawner;
+use crate::markdown::MdRenderer;
+
+use super::format::{canonical_tool_name, format_tool_call, trim_tool_preview};
+#[cfg(unix)]
+use super::overlay::InputOverlay;
+use super::spinner::ThinkingSpinner;
+
+/// Builds an agent bound to a session. If `session` is `Some`, the
+/// agent adopts it as-is (used by `/fork` to continue on a just-copied
+/// branch). If `None`, a fresh session id is minted — the behaviour
+/// the REPL entry point and `/clear` both want.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_agent<'a>(
+    client: &'a dyn ChatProvider,
+---
+                StreamEvent::Usage(_) => {}
+                StreamEvent::RetryReset => {
+                    if let Ok(mut r) = md.lock() {
+                        // Preserve the provider-specific dedup setting
+                        // across a retry — rebuilding the renderer from
+                        // scratch would re-enable long-line dedup on
+                        // z.ai / GLM sessions and swallow verbatim
+                        // repeated lines again.
+                        let keep_dedup = r.dedup_enabled();
+                        *r = crate::markdown::MdRenderer::new();
+                        r.set_dedup_enabled(keep_dedup);
+                    }
+                    #[cfg(unix)] overlay.before_output();
+                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+                }
+            }
+        }))
+}
+[exit] 0
+[rerun: b6]
+
+[/TOOL_RESULT]

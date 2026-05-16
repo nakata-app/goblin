@@ -1,0 +1,1376 @@
+//! `metis` command-line entrypoint.
+//!
+//! Two modes:
+//!
+//! * **One-shot.** `metis "do thing"` runs a single agent loop and
+//!   prints the result. Same shape since v0.1.
+//! * **REPL.** `metis` (no positional prompt) drops into an interactive
+//!   loop with slash commands, persistent on-disk session, and a
+//!   cumulative cost meter. See [`repl`].
+
+mod agent_spawner;
+mod config;
+#[cfg(feature = "ctx")]
+mod ctx;
+mod dashboard;
+mod deploy;
+mod ide;
+mod markdown;
+mod path_input;
+mod pr;
+mod projects;
+mod repl;
+mod router;
+mod tasks;
+mod tui;
+
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use std::io::Write;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use metis_api::{ChatProvider, Provider, StreamEvent};
+use metis_core::{
+    format_cost_footer, Agent, AgentConfig, AllowAll, AutonomousSecurityConfig,
+    AutonomousSecurityLayer, CompactionConfig, FeaturePermission, Permission, PolicyPermission,
+    SandboxMode, SessionStore, ToolContext, ToolRegistry,
+};
+use metis_multi_model::OpenRouterClient;
+
+/// Same one-liner recovery guidance the REPL prints, applied to the
+/// headless `metis "prompt"` path. Without this the user just sees the
+/// raw anyhow chain and has to guess whether the session can be
+/// recovered or what to try next.
+fn headless_recovery_hint(err: &metis_core::AgentError) -> &'static str {
+    match err {
+        metis_core::AgentError::LoopDetected { .. } => {
+            "model kept emitting the same tool call after every result was an error — \
+             rephrase the prompt or pass --model to switch. Session is preserved; \
+             use --resume to continue."
+        }
+        metis_core::AgentError::TextLoopDetected { .. } => {
+            "model repeated the same paragraph 3 turns running — try a different \
+             model with --model or rephrase. Session preserved; --resume to continue."
+        }
+        metis_core::AgentError::MaxTurns(_) => {
+            "agent hit the per-run turn cap. Pass --resume with the same prompt to \
+             continue, or raise max_turns in metis.toml."
+        }
+        metis_core::AgentError::Api(_) => {
+            "provider call failed after retry. Check API key / network, or pass \
+             --provider/--model to switch. Session preserved; --resume to retry."
+        }
+        metis_core::AgentError::NoChoices => {
+            "provider returned an empty response. Often a transient rate-limit; \
+             retry the same prompt or pass --model."
+        }
+        metis_core::AgentError::GuardrailBlocked { .. } => {
+            "output guardrail fired — adjust the banlist or rephrase the prompt."
+        }
+        metis_core::AgentError::BadToolArgs(_) => {
+            "model emitted invalid tool arguments. Usually self-corrects on retry."
+        }
+        metis_core::AgentError::Session(_) => {
+            "session store error — check disk space and `.metis/sessions/` permissions."
+        }
+        metis_core::AgentError::Config(_) => "config error — fix metis.toml and restart.",
+    }
+}
+
+fn parse_sandbox_mode(s: &str) -> Result<SandboxMode, String> {
+    match s {
+        "none" => Ok(SandboxMode::None),
+        "sandbox-exec" => Ok(SandboxMode::SandboxExec),
+        "bwrap" | "bubblewrap" => Ok(SandboxMode::Bubblewrap),
+        _ => Err(format!(
+            "unknown sandbox mode `{s}` — use `none`, `sandbox-exec`, or `bwrap`"
+        )),
+    }
+}
+
+/// Default system prompt. Kept short on purpose: long preambles burn
+/// tokens on every turn and the cost meter would surface that as a
+/// silent tax. The prompt establishes identity, the workspace contract,
+/// and a "stop when done" instruction so the loop terminates promptly.
+/// ASCII banner printed to stderr at startup. Uses ANSI truecolor so
+/// it renders in Metis turquoise on any modern terminal; falls back to
+/// the raw glyphs if the terminal strips colours. Kept small (5 lines)
+/// so it does not dominate short one-shot runs.
+const BANNER: &str = "\x1b[38;2;220;50;50m\
+   ███╗   ███╗███████╗████████╗██╗███████╗\n\
+   ████╗ ████║██╔════╝╚══██╔══╝██║██╔════╝\n\
+   ██╔████╔██║█████╗     ██║   ██║███████╗\n\
+   ██║╚██╔╝██║██╔══╝     ██║   ██║╚════██║\n\
+   ██║ ╚═╝ ██║███████╗   ██║   ██║███████║\n\
+   ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝╚══════╝\
+\x1b[0m";
+
+const TAGLINE: &str = "\x1b[38;2;255;165;0m  the original swallowed intelligence\x1b[0m";
+
+fn print_banner_with_model(model: Option<&str>) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!("{BANNER}");
+        if let Some(m) = model {
+            eprintln!("{TAGLINE}  \x1b[2m({m})\x1b[0m\n");
+        } else {
+            eprintln!("{TAGLINE}\n");
+        }
+    }
+}
+
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
+
+/// Load the MEMORY.md index from the workspace and append it to the
+/// system prompt so the model starts with awareness of prior memories.
+fn inject_memory_context(base_prompt: &str, workspace: &std::path::Path) -> String {
+    let store = match metis_core::MemoryStore::open(workspace) {
+        Ok(s) => s,
+        Err(_) => return base_prompt.to_string(),
+    };
+    let index = match store.read_index() {
+        Ok(s) if !s.is_empty() => s,
+        _ => return base_prompt.to_string(),
+    };
+    format!(
+        "{base_prompt}\n\n# Remembered context\n\
+         The following memories are stored from prior conversations. \
+         Use read_memory to load details when relevant.\n\n{index}"
+    )
+}
+
+/// Load workspace-level METIS.md (project instructions) and user-level
+/// ~/.metis/METIS.md (global instructions). Both are optional.
+/// Appended to the system prompt so the model sees project/user config.
+fn inject_metis_md(base_prompt: &str, workspace: &std::path::Path) -> String {
+    let mut extra = String::new();
+
+    // User-level: ~/.metis/METIS.md
+    if let Some(home) = dirs::home_dir() {
+        let user_md = home.join(".metis").join("METIS.md");
+        if let Ok(content) = std::fs::read_to_string(&user_md) {
+            if !content.trim().is_empty() {
+                extra.push_str("\n\n# User instructions (global)\n\n");
+                extra.push_str(content.trim());
+            }
+        }
+    }
+
+    // Workspace-level: .metis/METIS.md or METIS.md at root
+    for candidate in &[
+        workspace.join(".metis").join("METIS.md"),
+        workspace.join("METIS.md"),
+    ] {
+        if let Ok(content) = std::fs::read_to_string(candidate) {
+            if !content.trim().is_empty() {
+                extra.push_str("\n\n# Project instructions\n\n");
+                extra.push_str(content.trim());
+                break;
+            }
+        }
+    }
+
+    if extra.is_empty() {
+        base_prompt.to_string()
+    } else {
+        format!("{base_prompt}{extra}")
+    }
+}
+
+/// `metis` — an honest Rust agent CLI named for the goddess of wisdom.
+#[derive(Debug, Parser)]
+#[command(name = "metis", version, about, long_about = None)]
+struct Cli {
+    /// Prompt to send to the model. Omit to drop into the interactive
+    /// REPL instead — `metis` with no positional argument starts a
+    /// multi-turn session with slash commands.
+    prompt: Option<String>,
+
+    /// Pick the OpenAI-compatible provider. Built-ins: `deepseek`,
+    /// `openai`, `grok`, `openrouter`, `together`. Each provider reads
+    /// its key from its own env var (e.g. `OPENAI_API_KEY`).
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Override the default model. Leave unset to use the provider's
+    /// default (e.g. `deepseek-chat` for DeepSeek, `gpt-4o-mini` for
+    /// OpenAI). Anything the provider accepts is fine.
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Fallback model(s) tried automatically when the primary model
+    /// produces no patch (empty git diff) or exits with an error.
+    /// Repeatable; tried in order until one wins or the list is
+    /// exhausted. Use provider-prefixed slugs (e.g. `minimax:m2.7`,
+    /// `glm:5.1`). See `docs/design/fallback-model.md` for semantics.
+    #[arg(long = "fallback-model")]
+    fallback_model: Vec<String>,
+
+    /// Sampling temperature passed straight to the provider.
+    #[arg(long)]
+    temperature: Option<f32>,
+
+    /// Auto-classify each query and apply optimal temperature/top_p.
+    /// Ignored when --temperature is set explicitly.
+    #[arg(long)]
+    autotune: bool,
+
+    /// Cap on completion tokens per turn. Leave unset to use the
+    /// provider's default.
+    #[arg(long)]
+    max_tokens: Option<u32>,
+
+    /// Disable the built-in tool set. Useful for plain Q&A prompts
+    /// where you don't want the model touching files.
+    #[arg(long)]
+    no_tools: bool,
+
+    /// Override the workspace root. Defaults to the current working
+    /// directory; tools refuse to read or write outside this root.
+    #[arg(long)]
+    workspace: Option<std::path::PathBuf>,
+
+    /// Skip the interactive permission prompt and auto-approve every
+    /// tool call. Intended for CI and for power users who have read
+    /// the caveat. `edit_file` and `bash` still run inside the
+    /// workspace, but without any human in the loop.
+    #[arg(long)]
+    yes: bool,
+
+    /// Enable autonomous security layer with kill switches and resource limits.
+    /// Enforces max tool calls, cost ceiling, timeout, and protected paths.
+    #[arg(long)]
+    autonomous_security: bool,
+
+    /// Name the session to create or resume. Sessions live under
+    /// `<workspace>/.metis/sessions/<id>.jsonl`. Omit to get an
+    /// auto-generated id when `--resume` is not used.
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Resume the most recent session, or the one named by `--session`.
+    /// The existing transcript is replayed as the starting state and
+    /// the new prompt is appended on top of it.
+    #[arg(long)]
+    resume: bool,
+
+    /// Provider context window in tokens. Used by the auto-compactor
+    /// to decide when the transcript needs trimming. Defaults to the
+    /// `CompactionConfig` default (~64k).
+    #[arg(long)]
+    context_window: Option<u32>,
+
+    /// Number of most-recent messages the compactor always keeps
+    /// verbatim. Higher values reduce forgetfulness at the cost of
+    /// using more of the context window. Default: 12.
+    #[arg(long)]
+    keep_tail: Option<usize>,
+
+    /// Attach a Model Context Protocol server. The value is the full
+    /// command line to spawn (split on whitespace). Repeat the flag to
+    /// attach multiple servers; their tools merge into the registry.
+    /// Example: `--mcp 'uvx mcp-server-time --local-timezone Europe/Istanbul'`.
+    #[arg(long = "mcp")]
+    mcp: Vec<String>,
+
+    /// Sandbox mode for bash commands. `sandbox-exec` uses macOS SBPL
+    /// profiles, `bwrap` uses Linux bubblewrap. Both restrict writes to
+    /// the workspace directory. Default: none (no OS-level sandbox).
+    #[arg(long, value_parser = parse_sandbox_mode)]
+    sandbox: Option<metis_core::SandboxMode>,
+
+    /// Run multi-model evaluation (GODMODE CLASSIC). Requires OPENROUTER_API_KEY.
+    #[arg(long)]
+    multi_model: bool,
+
+    /// Start the IDE bridge server instead of the REPL. IDEs (VS Code,
+    /// JetBrains) connect via TCP and communicate using JSON-RPC 2.0.
+    /// Specify the port to listen on (default: 9222).
+    #[arg(long)]
+    ide: Option<Option<u16>>,
+
+    /// Attach image files to the prompt. The model will see both the
+    /// text prompt and the images. Repeat the flag for multiple images.
+    /// Supported formats: PNG, JPEG, GIF, WebP, BMP.
+    /// Example: `metis "What's in this screenshot?" --image shot.png`
+    #[arg(long = "image", value_name = "PATH")]
+    images: Vec<std::path::PathBuf>,
+
+    /// Force the rich terminal UI (ratatui). This is the default now
+    /// — the flag is kept for explicitness and scripting.
+    #[arg(long)]
+    tui: bool,
+
+    /// Fall back to the legacy plain-text REPL. Use this if you need a
+    /// feature the TUI doesn't port yet (most slash commands, etc.),
+    /// or if your terminal misbehaves with alt-screen buffers.
+    #[arg(long)]
+    repl: bool,
+
+    /// Title for `metis pr` (the push-and-open-PR subcommand). Ignored
+    /// outside the `pr` subcommand. Equivalent to `gh pr create --title
+    /// <T>`; when omitted, gh's `--fill` picks up the latest commit
+    /// message. Works around the fact that clap can't easily consume a
+    /// free-form multi-word title positional after the `pr` keyword.
+    #[arg(long)]
+    title: Option<String>,
+
+    /// Enable multi-model evaluation (ULTRAPLINIAN-like).
+    #[arg(long)]
+    multi_model_evaluation: bool,
+
+    /// Enable prompt perturbation for testing (Parseltongue-like).
+    #[arg(long)]
+    prompt_perturbation: bool,
+
+    /// Enable parallel model execution (GODMODE CLASSIC-like).
+    #[arg(long)]
+    parallel_models: bool,
+
+    /// Maximum number of parallel models (if parallel_models enabled).
+    #[arg(long, default_value_t = 3)]
+    max_parallel_models: u32,
+
+    /// Enable API key management commands.
+    #[arg(long)]
+    api_keys: bool,
+
+    /// Require confirmation for red-teaming features.
+    #[arg(long, default_value_t = true)]
+    require_confirmation: bool,
+
+    /// Maximum budget for multi-model calls in USD.
+    #[arg(long, default_value_t = 5.0)]
+    multi_model_budget_usd: f64,
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    // Intercept `metis project <sub>` before clap so it can have its
+    // own tiny dispatcher without bolting a subcommand enum onto the
+    // flat `metis <prompt?>` surface. Also intercept a bare alias
+    // form `metis <known-project>` that resolves to a workspace swap.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.len() >= 2 && argv[1] == "project" {
+        let code = run_project_subcommand(&argv[2..]);
+        return match code {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("metis: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("metis: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Handle API key management commands.
+fn handle_api_keys() {
+    let providers = [
+        ("OpenAI", "OPENAI_API_KEY"),
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("DeepSeek", "DEEPSEEK_API_KEY"),
+        ("Google", "GOOGLE_API_KEY"),
+        ("Groq", "GROQ_API_KEY"),
+        ("Mistral", "MISTRAL_API_KEY"),
+        ("Together AI", "TOGETHER_API_KEY"),
+    ];
+    println!("API Keys:");
+    for (name, var) in providers {
+        let status = if std::env::var(var).is_ok() {
+            "set"
+        } else {
+            "not set"
+        };
+        println!("  {name}: {status} ({var})");
+    }
+}
+
+fn run_project_subcommand(args: &[String]) -> Result<()> {
+    let op = args.first().map(String::as_str).unwrap_or("list");
+    match op {
+        "list" | "ls" => {
+            let entries = projects::list();
+            if entries.is_empty() {
+                println!("no projects registered. add one with:");
+                println!("  metis project add <name> [path]");
+                return Ok(());
+            }
+            let widest = entries.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+            for (name, path) in entries {
+                println!("  {name:<width$}  {path}", width = widest);
+            }
+            Ok(())
+        }
+        "add" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: metis project add <name> [path]"))?;
+            let path = match args.get(2) {
+                Some(p) => std::path::PathBuf::from(p),
+                None => std::env::current_dir().context("could not read current directory")?,
+            };
+            projects::add(name, &path)?;
+            let resolved = std::fs::canonicalize(&path)?;
+            println!("added `{name}` → {}", resolved.display());
+            Ok(())
+        }
+        "rm" | "remove" | "delete" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| anyhow::anyhow!("usage: metis project rm <name>"))?;
+            if projects::remove(name)? {
+                println!("removed `{name}`");
+            } else {
+                println!("no project named `{name}`");
+            }
+            Ok(())
+        }
+        other => anyhow::bail!("unknown project subcommand `{other}`. try: list, add, rm"),
+    }
+}
+
+async fn run() -> Result<()> {
+    // Bare alias form: `metis lingua` resolves to a workspace swap
+    // when `lingua` is a registered project. Falls through (treated
+    // as a prompt) otherwise. Only considered when the first positional
+    // arg is a plain identifier with no flags or second positional —
+    // so real prompts like `metis "lingua ne zaman bitiyor?"` don't
+    // get hijacked.
+    let raw: Vec<String> = std::env::args().collect();
+    let mut aliased_workspace: Option<std::path::PathBuf> = None;
+    if raw.len() == 2 && !raw[1].starts_with('-') {
+        if let Some(path) = projects::resolve(&raw[1]) {
+            aliased_workspace = Some(path);
+        }
+    }
+
+    let cli = Cli::parse();
+
+    // Handle `metis update` as a built-in subcommand before anything else.
+    if cli.prompt.as_deref() == Some("update") {
+        return run_update().await;
+    }
+
+    // Handle `metis dashboard` / `metis stats` as a built-in subcommand.
+    if matches!(cli.prompt.as_deref(), Some("dashboard") | Some("stats")) {
+        return dashboard::run();
+    }
+
+    // Handle `metis deploy [target]` as a built-in subcommand.
+    if let Some(ref prompt) = cli.prompt {
+        let words: Vec<&str> = prompt.split_whitespace().collect();
+        if words.first() == Some(&"deploy") {
+            return run_deploy_command(words.get(1).copied(), &cli).await;
+        }
+    }
+
+    // Handle `metis pr [title]` as a built-in subcommand.
+    //
+    // Title resolution, in order of preference:
+    //   1. `--title "..."` flag (recommended — unambiguous under clap)
+    //   2. words after `pr` inside a single quoted prompt, e.g.
+    //      `metis 'pr big refactor'` (legacy call form, still works)
+    //   3. nothing — `gh pr create --fill` adopts the last commit msg
+    //
+    // `metis pr big refactor` with three separate argv tokens still
+    // fails at clap (unexpected positional) because `prompt` only
+    // accepts one; the flag is the ergonomic fix without restructuring
+    // into proper clap subcommands.
+    if let Some(ref prompt) = cli.prompt {
+        let words: Vec<&str> = prompt.split_whitespace().collect();
+        if words.first() == Some(&"pr") {
+            let workspace = match cli.workspace.clone() {
+                Some(p) => p,
+                None => std::env::current_dir().context("could not read current directory")?,
+            };
+            let workspace = std::fs::canonicalize(&workspace)
+                .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
+            let title = cli.title.clone().or_else(|| {
+                if words.len() > 1 {
+                    Some(words[1..].join(" "))
+                } else {
+                    None
+                }
+            });
+            return pr::run(title.as_deref(), &workspace);
+        }
+    }
+
+    // Handle `metis tasks [subcommand] [args...]` as a built-in subcommand.
+    if let Some(ref prompt) = cli.prompt {
+        let words: Vec<&str> = prompt.split_whitespace().collect();
+        if words.first() == Some(&"tasks") || words.first() == Some(&"task") {
+            let workspace = match cli.workspace.clone() {
+                Some(p) => p,
+                None => std::env::current_dir().context("could not read current directory")?,
+            };
+            let workspace = std::fs::canonicalize(&workspace)
+                .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
+            print_banner_with_model(None);
+            return tasks::run_tasks_command(&words[1..], &workspace);
+        }
+    }
+
+    // Handle `metis ctx [subcommand] [args...]` — context blob store
+    // inspection and pruning.
+    #[cfg(feature = "ctx")]
+    if let Some(ref prompt) = cli.prompt {
+        let words: Vec<&str> = prompt.split_whitespace().collect();
+        if words.first() == Some(&"ctx") {
+            let workspace = match cli.workspace.clone() {
+                Some(p) => p,
+                None => std::env::current_dir().context("could not read current directory")?,
+            };
+            let workspace = std::fs::canonicalize(&workspace)
+                .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
+            return ctx::run_ctx_command(&words[1..], &workspace);
+        }
+    }
+
+    // Handle `metis repl` as an alias for starting the REPL (no prompt).
+    // This is a UX convenience: users might intuitively type `metis repl`
+    // expecting to enter the REPL, even though the official way is just `metis`.
+    // We clear the prompt so the logic below enters REPL mode.
+    let mut cli = cli;
+    if cli.prompt.as_deref() == Some("repl") {
+        cli.prompt = None;
+    }
+
+    // Resolve workspace first so config files can be loaded before
+    // provider/model selection. Project-alias wins over cwd so
+    // `metis lingua` from anywhere swaps into the lingua workspace.
+    let workspace = match (aliased_workspace.clone(), cli.workspace.clone()) {
+        (Some(p), _) => p,
+        (None, Some(p)) => p,
+        (None, None) => std::env::current_dir().context("could not read current directory")?,
+    };
+    let workspace = std::fs::canonicalize(&workspace)
+        .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
+
+    // An alias-only invocation has no prompt — drop straight into
+    // REPL/TUI inside the resolved workspace. Without this the empty
+    // positional would still trigger the default interactive mode,
+    // but the lingering cli.prompt = Some("lingua") would be fed to
+    // the model as its first user turn. Clear it up front.
+    let cli = if aliased_workspace.is_some() {
+        let mut c = cli;
+        c.prompt = None;
+        c
+    } else {
+        cli
+    };
+
+    // Load config: ~/.metis/config.toml (global) merged with
+    // <workspace>/.metis/config.toml (project). CLI flags override both.
+    let cfg = config::load_config(&workspace);
+
+    // Inject API keys from config into env (only if not already set).
+    // This lets users store keys in ~/.metis/config.toml instead of
+    // exporting them in every shell session.
+    for (key, value) in &cfg.api_keys {
+        if std::env::var(key).is_err() {
+            std::env::set_var(key, value);
+        }
+    }
+
+    let (effective_provider, provider_source) = if let Some(p) = cli.provider.as_deref() {
+        (p, "CLI --provider")
+    } else if let Some(p) = cfg.provider.as_deref() {
+        (p, "config file")
+    } else {
+        // MiniMax M2.7 default. Earlier defaults (DeepSeek direct, then
+        // NIM-hosted DeepSeek V4 Flash) both went dark — DeepSeek's
+        // balance ran out, and NIM's deepseek-v4-* tier was timing out
+        // on every chat completion (probed 2026-04-27, all four
+        // deepseek slugs returned read-timeout while llama-3.3 and
+        // qwen3-coder served fine on the same key). MiniMax M2.7 is
+        // the funded fallback Atakan picked: Anthropic-shaped wire,
+        // strong tool calling, no rotation.
+        ("minimax", "default")
+    };
+    let provider = Provider::lookup(effective_provider).with_context(|| {
+        let names: Vec<&str> = Provider::BUILTINS.iter().map(|p| p.id).collect();
+        format!(
+            "unknown provider `{effective_provider}` from {provider_source} — built-ins: {}",
+            names.join(", ")
+        )
+    })?;
+    let mut client = match provider.client_from_env() {
+        Ok(c) => c,
+        Err(metis_api::ApiError::MissingKey(var)) => {
+            eprintln!("\x1b[38;2;0;229;209m");
+            eprintln!("  Welcome to metis! To get started, set your API key:\n");
+            eprintln!("    export {var}=sk-...\n");
+            eprintln!("  Supported providers:");
+            for p in metis_api::Provider::BUILTINS {
+                eprintln!("    --provider {:<12}  env: {}", p.id, p.env_var);
+            }
+            eprintln!("\n  Quick start:");
+            eprintln!("    metis \"explain this codebase\"");
+            eprintln!("    metis                          # interactive REPL");
+            eprintln!("    metis --tui                    # rich terminal UI");
+            eprintln!("    metis dashboard                # usage stats");
+            eprintln!("    metis --help                   # all options");
+            eprintln!("\x1b[0m");
+            return Err(anyhow::anyhow!("{var} not set — see above for setup"));
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("could not initialize `{}` client", provider.id));
+        }
+    };
+    // If --provider is explicitly set but --model is not, use the provider's
+    // default model instead of the config model (which may be for a different
+    // provider, e.g. "gemini-2.5-flash" when switching to deepseek).
+    let model = cli
+        .model
+        .clone()
+        .map(|raw| crate::repl::normalize_model_name(&raw))
+        .or_else(|| {
+            if cli.provider.is_none() {
+                cfg.model
+                    .clone()
+                    .map(|raw| crate::repl::normalize_model_name(&raw))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| provider.default_model.to_string());
+
+    // Warn only when config model differs AND user didn't explicitly pick a provider.
+    if cli.model.is_none() && cli.provider.is_none() {
+        if let Some(configured_model) = &cfg.model {
+            let normalized_config_model = crate::repl::normalize_model_name(configured_model);
+            if normalized_config_model != model {
+                eprintln!("\x1b[1;32m[metis] warning: configured model `{configured_model}` might not be supported by `{effective_provider}`. Effective model is `{model}`. Please check your config.\x1b[0m");
+            }
+        }
+    }
+
+    // TUI mode draws its own pinned banner inside the alt-screen, so
+    // printing one to the main screen here would just show up behind
+    // the alt-screen and re-appear on exit — a visually duplicated
+    // banner. Skip startup banner for TUI; REPL/prompt modes still get
+    // it because they render on the main screen.
+    let tui_mode = !cli.repl && cli.ide.is_none() && cli.prompt.is_none();
+    if !tui_mode {
+        print_banner_with_model(Some(&model));
+    }
+
+    let mut registry = if cli.no_tools {
+        ToolRegistry::new()
+    } else {
+        ToolRegistry::with_builtins()
+    };
+
+    // Attach MCP servers, if any. Each `--mcp` value is a full command
+    // line that we split on whitespace; that keeps the flag friendly to
+    // typical invocations like `uvx mcp-server-time` without dragging a
+    // shell-quoting library into the CLI. Servers that fail to spawn or
+    // initialize abort startup with a clear error rather than silently
+    // continuing with a partial tool set.
+    // Collect MCP specs from config file + CLI flags. CLI flags append
+    // to (not replace) the config list so both sources are honoured.
+    let mut mcp_specs: Vec<&str> = cfg.mcp.iter().map(|s| s.as_str()).collect();
+    for s in &cli.mcp {
+        if !mcp_specs.contains(&s.as_str()) {
+            mcp_specs.push(s.as_str());
+        }
+    }
+    // Spawn + initialize all MCP servers concurrently. Each server's
+    // stdio handshake costs hundreds of ms (Python/Node/uvx cold starts
+    // dominate); doing them sequentially turned a 4-server config into
+    // ~7s of dead time before the first prompt. We still register them
+    // into the (single-threaded) registry sequentially after spawn so
+    // ordering is deterministic.
+    if !mcp_specs.is_empty() {
+        let spawn_futs = mcp_specs.iter().map(|spec| async move {
+            let mut parts = spec.split_whitespace();
+            let command = match parts.next() {
+                Some(c) => c,
+                None => return (*spec, Err(anyhow::anyhow!("empty mcp value"))),
+            };
+            let args: Vec<String> = parts.map(str::to_string).collect();
+            let result = metis_core::spawn_mcp_server(command, &args)
+                .await
+                .map_err(anyhow::Error::from);
+            (*spec, result)
+        });
+        let spawned = futures::future::join_all(spawn_futs).await;
+        for (spec, result) in spawned {
+            match result {
+                Ok(handle) => {
+                    let count = handle.register_into(&mut registry);
+                    eprintln!("\x1b[1;32m[metis] mcp `{spec}` attached, {count} tools\x1b[0m");
+                }
+                Err(e) => eprintln!("\x1b[1;32m[metis] warning: mcp `{spec}` failed — {e} (continuing without it)\x1b[0m"),
+            }
+        }
+    }
+
+    // ctx blob store + sandbox: enabled by default, opt out with
+    // `METIS_CTX=0`. Wraps every registered tool so outputs ≥4 KB
+    // are stashed under `<workspace>/.metis/blobs/` and replaced with
+    // a `ctx://<hex>` reference plus an ~800-byte preview. The agent
+    // gets the (store, index) handles for blob-aware micro-compaction.
+    #[cfg(feature = "ctx")]
+    let blob_handles = if std::env::var("METIS_CTX").as_deref() == Ok("0") {
+        None
+    } else {
+        match registry.enable_sandbox(&workspace, metis_core::SandboxConfig::default()) {
+            Ok(handles) => Some(handles),
+            Err(e) => {
+                eprintln!(
+                    "\x1b[1;33m[metis] ctx blob store unavailable ({e}); continuing without sandbox\x1b[0m"
+                );
+                None
+            }
+        }
+    };
+
+    let registry = registry;
+
+    // Session: either resume an existing one or mint a fresh id.
+    //
+    // Resolution order:
+    //   --session <id>     → open that id exactly (may be a new id)
+    //   --resume + <id>    → same as above
+    //   --resume (alone)   → most recent session in the workspace
+    //   (neither)          → None; REPL mints its own fresh id
+    let session = if cli.resume || cli.session.is_some() {
+        let id = match cli.session.clone() {
+            Some(explicit) => explicit,
+            None => SessionStore::latest_id(&workspace)
+                .context("could not list sessions")?
+                .unwrap_or_else(SessionStore::new_id),
+        };
+        let s = SessionStore::open(&workspace, &id).context("could not open session store")?;
+        eprintln!(
+            "[metis] session={} ({} prior messages)",
+            id,
+            s.messages().len()
+        );
+        // Tolerant jsonl loader silently drops malformed / truncated
+        // lines. Without this warning the user would never know that
+        // a past crash or manual edit cost them messages. Surfacing it
+        // also hints at when `.metis/sessions/<id>.jsonl` is worth
+        // inspecting by hand.
+        let stats = s.recovery_stats();
+        if stats.skipped > 0 {
+            eprintln!(
+                "\x1b[1;33m[metis] warning: {} line{} skipped while loading session (kept {}). \
+                 The jsonl file may have been truncated by a previous crash — open it to verify.\x1b[0m",
+                stats.skipped,
+                if stats.skipped == 1 { "" } else { "s" },
+                stats.recovered,
+            );
+        }
+        Some(s)
+    } else {
+        None
+    };
+
+    // Permission policy: CLI --yes > config yes > default (interactive).
+    let use_yes = cli.yes || cfg.yes.unwrap_or(false);
+
+    // Build feature config from CLI + config
+    let feature_config = metis_core::feature_permission::FeatureConfig {
+        multi_model_evaluation: cli.multi_model_evaluation
+            || cfg
+                .features
+                .as_ref()
+                .is_some_and(|f| f.multi_model_evaluation),
+        prompt_perturbation: cli.prompt_perturbation
+            || cfg.features.as_ref().is_some_and(|f| f.prompt_perturbation),
+        parallel_models: cli.parallel_models
+            || cfg.features.as_ref().is_some_and(|f| f.parallel_models),
+        max_parallel_models: cli
+            .max_parallel_models
+            .max(cfg.features.as_ref().map_or(3, |f| f.max_parallel_models)),
+        require_confirmation: cli.require_confirmation
+            && cfg
+                .features
+                .as_ref()
+                .map_or(true, |f| f.require_confirmation),
+        multi_model_budget_usd: cli.multi_model_budget_usd.min(
+            cfg.features
+                .as_ref()
+                .map_or(5.0, |f| f.multi_model_budget_usd),
+        ),
+    };
+
+    // Handle API key management if requested
+    if cli.api_keys {
+        handle_api_keys();
+        return Ok(());
+    }
+
+    let base_permission: Arc<dyn Permission> = if use_yes {
+        Arc::new(AllowAll)
+    } else {
+        let preview = cfg.edit_diff_preview.unwrap_or(true);
+        Arc::new(
+            PolicyPermission::new()
+                .with_workspace(workspace.clone())
+                .with_preview_enabled(preview),
+        )
+    };
+    let use_autonomous_security =
+        cli.autonomous_security || cfg.autonomous_security.unwrap_or(false);
+    let permission: Arc<dyn Permission> = if use_autonomous_security {
+        // `--yes` says "auto-approve everything"; the autonomous security
+        // layer still enforces resource limits, protected paths, dangerous
+        // bash patterns, and the kill switch — but it must not demand an
+        // interactive approval per tool, because headless/CI runs have no
+        // TTY to approve on. Clear the approval list when --yes is in
+        // effect so the inner AllowAll actually decides.
+        let mut sec_cfg = AutonomousSecurityConfig::default();
+        if use_yes {
+            sec_cfg.require_approval_for.clear();
+        }
+        Arc::new(AutonomousSecurityLayer::new(base_permission, sec_cfg))
+    } else {
+        base_permission
+    };
+
+    // Wrap with feature permission for god mode features
+    let permission: Arc<dyn Permission> =
+        Arc::new(FeaturePermission::new(permission, feature_config));
+
+    // Outermost layer: Rego policy gate (cfg-gated). With no policy
+    // dirs configured AND no defaults present, returns inner unchanged.
+    #[cfg(feature = "policy")]
+    let permission: Arc<dyn Permission> = {
+        let dirs = if cfg.policy_dirs.is_empty() {
+            metis_core::policy::default_policy_dirs(&workspace)
+        } else {
+            cfg.policy_dirs
+                .iter()
+                .map(|p| {
+                    if std::path::Path::new(p).is_absolute() {
+                        std::path::PathBuf::from(p)
+                    } else {
+                        workspace.join(p)
+                    }
+                })
+                .collect()
+        };
+        metis_core::policy::wrap_with_policy(permission, &dirs)
+    };
+
+    let mut compaction = CompactionConfig::default();
+    if let Some(cw) = cli.context_window.or(cfg.context_window) {
+        compaction.context_window = cw;
+    }
+    if let Some(kt) = cli.keep_tail.or(cfg.keep_tail) {
+        compaction.keep_tail = kt;
+    }
+
+    let mut system_prompt = inject_metis_md(
+        &inject_memory_context(DEFAULT_SYSTEM_PROMPT, &workspace),
+        &workspace,
+    );
+    // Tell the model what it is at session start.
+    system_prompt.push_str(&format!(
+        "\n# Model\nYou are running as model `{}`. When the user asks what model you are, answer with this name.\n",
+        model
+    ));
+    // Inject cross-session learned insights
+    {
+        let insights = metis_core::learning::load_relevant_insights(&workspace, 10);
+        let section = metis_core::learning::format_insights_section(&insights);
+        if !section.is_empty() {
+            system_prompt.push_str(&section);
+        }
+    }
+    // Inject repo-map for codebase awareness. We skip this entirely
+    // when the workspace is the user's home directory, because indexing
+    // `~/` pulls in ~/Library, ~/Downloads, bundled browser JS, etc. —
+    // 4 KB of noise that crowds out the real system prompt and pushes
+    // chat models into verbose, repetitive responses.
+    let workspace_is_home = dirs::home_dir().map(|h| workspace == h).unwrap_or(false);
+    if !workspace_is_home {
+        let map = metis_core::repomap::build_repo_map(&workspace, 100);
+        if !map.is_empty() {
+            // Cap at ~4000 chars to avoid bloating the prompt
+            let truncated = if map.len() > 4000 {
+                format!("{}…(truncated)\n", &map[..4000])
+            } else {
+                map
+            };
+            system_prompt.push_str("\n# Codebase map\n```\n");
+            system_prompt.push_str(&truncated);
+            system_prompt.push_str("```\n");
+        }
+    }
+    let config = AgentConfig {
+        model: model.clone(),
+        system_prompt: Some(system_prompt),
+        temperature: cli.temperature.or(cfg.temperature),
+        max_tokens: cli.max_tokens.or(cfg.max_tokens),
+        autotune: cli.autotune || cfg.autotune.unwrap_or(false),
+        compaction,
+        smart_compaction: cfg.smart_compaction.unwrap_or(true),
+        auto_commit: cfg.auto_commit.unwrap_or(false),
+        lint_command: cfg.auto_fix.as_ref().and_then(|af| af.lint_command.clone()),
+        ..AgentConfig::default()
+    };
+
+    // Resolution: `--sandbox` CLI flag > config `sandbox = "…"` > None.
+    // Auto-detect was REMOVED on 2026-04-19: it silently turned on
+    // sandbox-exec / bwrap on first run, which surprised the model
+    // into `bash cat /etc/hosts` being blocked and silently filtered
+    // cross-repo writes. Trust model now: the agent runs with the
+    // user's authority by default, and the permission gate is the
+    // sole guard for mutating tools. Users who still want OS
+    // isolation opt in with `metis --sandbox sandbox-exec`.
+    let effective_sandbox = cli.sandbox.clone().or_else(|| {
+        cfg.sandbox
+            .as_deref()
+            .and_then(|s| parse_sandbox_mode(s).ok())
+    });
+
+    // Auto-model routing: if enabled, classify the prompt and pick
+    // the right model. Explicit CLI `--model` or `--provider` always
+    // wins — force-disable routing for the whole session so neither
+    // the one-shot path nor the REPL turn-loop silently swaps the
+    // model the user asked for. Without this, a `--provider gemini
+    // --model gemini-2.5-flash` REPL would still get its model
+    // rewritten to `fast_model` on a simple prompt, and Gemini would
+    // 404 on a DeepSeek model id.
+    let mut routing_cfg = cfg.routing.clone().unwrap_or_default();
+    if (cli.model.is_some() || cli.provider.is_some()) && routing_cfg.is_enabled() {
+        eprintln!(
+            "\x1b[2m[metis] routing disabled for this session (explicit --model/--provider)\x1b[0m"
+        );
+        routing_cfg.auto_route = Some(false);
+    }
+
+    // Multi-model evaluation (GODMODE CLASSIC)
+    if cli.multi_model {
+        if let Some(prompt) = cli.prompt.clone() {
+            let api_key = std::env::var("OPENROUTER_API_KEY")
+                .context("OPENROUTER_API_KEY environment variable required for multi-model mode")?;
+
+            let client = OpenRouterClient::new(api_key);
+            eprintln!("🚀 Running GODMODE CLASSIC race with 5 jailbreak prompts...");
+
+            let results = client
+                .run_godmode_race(&prompt)
+                .await
+                .context("Multi-model evaluation failed")?;
+
+            println!("\n{}", "=".repeat(80));
+            println!("🎯 GODMODE CLASSIC RESULTS");
+            println!("{}", "=".repeat(80));
+
+            for (i, eval) in results.iter().enumerate() {
+                println!(
+                    "\n{}. {} (Score: {:.2}, Cost: ${:.6})",
+                    i + 1,
+                    eval.model_name,
+                    eval.score,
+                    eval.cost_usd
+                );
+                println!("{}", "-".repeat(40));
+                println!("{}", eval.response);
+                println!();
+            }
+
+            let total_cost: f64 = results.iter().map(|e| e.cost_usd).sum();
+            println!("📊 Total cost: ${:.6}", total_cost);
+            println!(
+                "🏆 Best model: {} (Score: {:.2})",
+                results[0].model_name, results[0].score
+            );
+
+            return Ok(());
+        } else {
+            anyhow::bail!(
+                "Multi-model mode requires a prompt (e.g., `metis --multi-model \"your prompt\"`)"
+            );
+        }
+    }
+
+    // Branch on whether the user gave us a positional prompt. With
+    // a prompt we run the v0.1 one-shot path; without one we hand off
+    // to the interactive REPL. The REPL builds its own agent so it can
+    // mint a fresh session id and rebuild the agent on `/clear`.
+    if let Some(prompt) = cli.prompt.clone() {
+        // Track the active provider name through any router swap so the
+        // stream callback below can disable the char-level repeat
+        // muter for z.ai / GLM (where repetition is legitimate).
+        let mut active_provider: String = effective_provider.to_string();
+        // Apply auto-routing for one-shot mode: if the user didn't
+        // explicitly set --model or --provider and routing is enabled,
+        // classify the prompt and swap the model.
+        let config = if cli.model.is_none() && cli.provider.is_none() {
+            if let Some(target) = router::route(&routing_cfg, &prompt) {
+                let tier = router::classify(&prompt);
+                // Switch provider if route target specifies one (e.g. "glm:glm-5.1").
+                if let Some(ref pname) = target.provider {
+                    if let Some(p) = metis_api::Provider::lookup(pname) {
+                        match p.client_from_env() {
+                            Ok(new_client) => {
+                                client = new_client;
+                                active_provider = pname.clone();
+                                eprintln!(
+                                    "\x1b[38;2;220;50;50m[router]\x1b[0m [1m{tier:?}[22m → {pname}:{}",
+                                    target.model
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[router] can't switch to {pname}: {e}, using current provider"
+                                );
+                                eprintln!(
+                                    "\x1b[38;2;220;50;50m[router]\x1b[0m [1m{tier:?}[22m → {}",
+                                    target.model
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!("[router] unknown provider `{pname}`, using current provider");
+                        eprintln!(
+                            "\x1b[38;2;220;50;50m[router]\x1b[0m [1m{tier:?}[22m → {}",
+                            target.model
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "\x1b[38;2;220;50;50m[router]\x1b[0m [1m{tier:?}[22m → {}",
+                        target.model
+                    );
+                }
+                let sys = config.system_prompt.map(|s| {
+                    s.replace(
+                        &format!("running as model `{model}`"),
+                        &format!("running as model `{}`", target.model),
+                    )
+                });
+                AgentConfig {
+                    model: target.model,
+                    system_prompt: sys,
+                    ..config
+                }
+            } else {
+                config
+            }
+        } else {
+            config
+        };
+
+        let hooks = metis_core::load_hooks(&workspace);
+        let mut ctx = ToolContext::new(workspace.clone()).with_hooks(hooks);
+        if let Some(secs) = cfg.tool_timeout_secs {
+            // Hard cap at 600s so a runaway config can't stall the
+            // agent loop forever. 0 falls back to default.
+            let secs = secs.clamp(1, 600);
+            ctx.bash.timeout = std::time::Duration::from_secs(secs);
+        }
+        if let Some(ref sb) = effective_sandbox {
+            ctx.bash.sandbox = sb.clone();
+            let label = match sb {
+                SandboxMode::SandboxExec => "sandbox-exec (macOS)",
+                SandboxMode::Bubblewrap => "bwrap (Linux)",
+                SandboxMode::None => "none",
+            };
+            eprintln!("\x1b[2m[metis] bash sandbox: {label}\x1b[0m");
+        }
+        // Wrap client/registry in Arcs so the agent-spawner can capture
+        // 'static handles. Without the spawner, model-driven `agent` /
+        // `parallel_agents` tool calls fail with
+        // "agent spawner not configured — subagents require an interactive session".
+        let client: Arc<dyn ChatProvider> = Arc::from(client);
+        let registry = Arc::new(registry);
+        let spawner = agent_spawner::build(
+            Arc::clone(&client),
+            Arc::clone(&registry),
+            &workspace,
+            config.clone(),
+            Arc::clone(&permission),
+            ctx.background_agents.clone(),
+        );
+        ctx = ctx.with_agent_spawner(spawner);
+        let mut agent = Agent::new(&*client, &registry, ctx, config)
+            .with_permission(permission)
+            .with_guardrail(metis_core::guardrail::load_default(&workspace));
+        if let Some(s) = session {
+            agent = agent.with_session(s);
+        }
+        #[cfg(feature = "ctx")]
+        if let Some((store, index)) = &blob_handles {
+            agent = agent.with_blob_handles(store.clone(), index.clone());
+        }
+        // Reasoning-heavy providers (GLM on z.ai) legitimately emit
+        // verbatim repeated headings / list scaffolds as part of
+        // normal output. When repeat filtering is on, lines disappear
+        // and the response looks truncated — that's what "yazılar
+        // kayboldu" was. `resolve_dedup_enabled` honors the opt-in env
+        // flag and force-disables on z.ai/GLM regardless. The char-
+        // level one-shot muter stays on only for providers where
+        // repeat filtering is wanted.
+        let md = std::sync::Arc::new(std::sync::Mutex::new({
+            let mut r = markdown::MdRenderer::new();
+            r.set_dedup_enabled(markdown::resolve_dedup_enabled(&active_provider));
+            r
+        }));
+        let os_chars: std::sync::Arc<std::sync::Mutex<Vec<char>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let os_muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let os_mute_enabled = markdown::provider_wants_repeat_filters(&active_provider);
+        agent = agent.with_stream_callback({
+            let md = std::sync::Arc::clone(&md);
+            let chars = std::sync::Arc::clone(&os_chars);
+            let muted = std::sync::Arc::clone(&os_muted);
+            move |event| match event {
+                StreamEvent::TextDelta(text) => {
+                    if muted.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    if os_mute_enabled {
+                        let mut all = chars.lock().unwrap();
+                        let mut should_mute = false;
+                        for ch in text.chars() {
+                            all.push(ch);
+                            let n = all.len();
+                            if n > 30 && n % 5 == 0 {
+                                let window = 15.min(n / 2);
+                                let tail: String = all[n - window..].iter().collect();
+                                let search: String = all[..n - window].iter().collect();
+                                if search.contains(&tail) {
+                                    should_mute = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if should_mute {
+                            muted.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                    if let Ok(mut r) = md.lock() {
+                        r.push(&text);
+                    }
+                }
+                StreamEvent::ThinkingDelta(text) => {
+                    print!("\x1b[2m{text}\x1b[0m");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamEvent::ToolCall {
+                    name,
+                    arguments_preview,
+                } => {
+                    if let Ok(mut r) = md.lock() {
+                        r.finish();
+                    }
+                    let _ = std::io::stdout().flush();
+                    eprintln!("\x1b[2m→ {name}\x1b[0m \x1b[2m{arguments_preview}\x1b[0m");
+                }
+                StreamEvent::Usage(_) => {}
+                StreamEvent::ToolResult {
+                    name,
+                    preview,
+                    is_error,
+                } => {
+                    if is_error {
+                        eprintln!("  \x1b[31m✗ {name}\x1b[0m \x1b[2m{preview}\x1b[0m");
+                    } else {
+                        eprintln!("  \x1b[32m✓ {name}\x1b[0m \x1b[2m{preview}\x1b[0m");
+                    }
+                }
+                StreamEvent::RetryReset => {
+                    if let Ok(mut r) = md.lock() {
+                        let keep_dedup = r.dedup_enabled();
+                        *r = crate::markdown::MdRenderer::new();
+                        r.set_dedup_enabled(keep_dedup);
+                    }
+                    eprint!("\r\x1b[2K\x1b[2m(retrying…)\x1b[0m\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+            }
+        });
+
+        // Build the user input: plain text or multimodal with images.
+        let user_input = if cli.images.is_empty() {
+            metis_core::UserInput::Text(prompt)
+        } else {
+            metis_core::UserInput::with_images(&prompt, &cli.images)
+                .context("failed to read image file(s)")?
+        };
+
+        let run_result = tokio::select! {
+            result = agent.run(user_input) => Some(result),
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n[metis] interrupted");
+                None
+            }
+        };
+
+        if let Ok(mut r) = md.lock() {
+            r.finish();
+        }
+        println!();
+
+        match run_result {
+            Some(Ok(output)) => {
+                eprintln!("{}", format_cost_footer(&output.usage, &model));
+                Ok(())
+            }
+            Some(Err(err)) => {
+                // Print the actionable recovery hint before bubbling
+                // the error to anyhow — REPL has the same treatment;
+                // the headless path used to drop straight to a raw
+                // anyhow chain so the user never saw the hint.
+                eprintln!("\x1b[2m[metis] {}\x1b[0m", headless_recovery_hint(&err));
+                Err(err).context("agent run failed")
+            }
+            None => Ok(()), // Ctrl+C — exit cleanly
+        }
+    } else if let Some(ide_port) = cli.ide {
+        // IDE bridge mode: start a JSON-RPC server for IDE integration.
+        let port = ide_port.unwrap_or(9222);
+        let client: Arc<dyn ChatProvider> = Arc::from(client);
+        let registry = Arc::new(registry);
+        ide::run_ide_server(
+            client, registry, &workspace, config, permission, &model, port,
+        )
+        .await
+    } else if !cli.repl {
+        // Default path — rich TUI. The `--tui` flag is now a no-op
+        // honored for backwards compatibility; `--repl` is the
+        // opt-out for users who need the legacy plain-text REPL.
+        let client: Arc<dyn ChatProvider> = Arc::from(client);
+        let registry = Arc::new(registry);
+        let sb = effective_sandbox.unwrap_or_default();
+        tui::run_tui(
+            client,
+            registry,
+            &workspace,
+            config,
+            use_yes,
+            &model,
+            sb,
+            effective_provider,
+            #[cfg(feature = "ctx")]
+            blob_handles.clone(),
+        )
+        .await
+    } else {
+        // REPL mode can now adopt a pre-loaded session via `--resume` or
+        // `--session`. `session` was resolved upstream: `--resume` alone
+        // picks the most recent session in the workspace, `--session <id>`
+        // targets that id explicitly, and bare REPL leaves it `None` so
+        // the builder mints a fresh id.
+        let client: Arc<dyn ChatProvider> = Arc::from(client);
+        let registry = Arc::new(registry);
+        let sb = effective_sandbox.unwrap_or_default();
+        // Invalid budget values (≤ 0) are dropped with a warning rather
+        // than silently producing `$-5.00 (0%)` in the banner, which
+        // looked broken but still let `over_budget()` stay false via
+        // the zero-guard. TOML parse errors for unrelated fields are
+        // already caught earlier by the config loader.
+        let budget = match cfg.daily_budget_usd {
+            Some(b) if b > 0.0 => Some(b),
+            Some(b) => {
+                eprintln!(
+                    "\x1b[1;33m[metis] warning: daily_budget_usd = {b} is not positive; \
+                     treating as unset\x1b[0m"
+                );
+                None
+            }
+            None => None,
+        };
+        let budget_hard_stop = cfg.budget_hard_stop.unwrap_or(false) && budget.is_some();
+        repl::run_repl(
+            client,
+            registry,
+            &workspace,
+            config,
+            permission,
+            &model,
+            effective_provider,
+            sb,
+            routing_cfg,
+            session,
+            budget,
+            budget_hard_stop,
+            #[cfg(feature = "ctx")]
+            blob_handles.clone(),
+        )
+        .await
+    }
+}
+
+/// `metis deploy [target]` — deploy to configured targets.
+async fn run_deploy_command(target_arg: Option<&str>, cli: &Cli) -> Result<()> {
+    let workspace = match cli.workspace.clone() {
+        Some(p) => p,
+        None => std::env::current_dir().context("could not read current directory")?,
+    };
+    let workspace = std::fs::canonicalize(&workspace)
+        .with_context(|| format!("workspace `{}` does not exist", workspace.display()))?;
+
+    print_banner_with_model(None);
+
+    let target = match target_arg {
+        Some(name) => deploy::DeployTarget::parse(name).with_context(|| {
+            format!(
+                "unknown deploy target `{name}` — valid targets: \
+                 cloudflare (cf), github (gh), ssh (remote)"
+            )
+        })?,
+        None => deploy::DeployTarget::Auto,
+    };
+
+    let config = deploy::load_deploy_config(&workspace);
+    deploy::run_deploy(target, &workspace, &config).await
+}
+
+/// `metis update` — check for and apply self-updates from GitHub releases.
+async fn run_update() -> Result<()> {
+    use metis_core::update;
+
+    eprintln!("[metis] current version: v{}", update::CURRENT_VERSION);
+    eprintln!("[metis] checking for updates...");
+
+    let client = reqwest::Client::new();
+    let check = update::check_latest(&client)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if !check.is_newer {
+        eprintln!("[metis] already up to date (v{})", check.current);
+        return Ok(());
+    }
+
+    eprintln!(
+        "[metis] new version available: v{} → v{}",
+        check.current, check.latest
+    );
+
+    if check.download_url.is_none() {
+        eprintln!(
+            "[metis] no pre-built binary for {} — build from source with:",
+            update::current_target()
+        );
+        eprintln!("  cargo install --git https://github.com/nakata-app/metis");
+        return Ok(());
+    }
+
+    eprintln!("[metis] downloading v{}...", check.latest);
+    let path = update::perform_update(&client, &check)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    eprintln!("[metis] updated to v{} ({})", check.latest, path.display());
+    Ok(())
+}

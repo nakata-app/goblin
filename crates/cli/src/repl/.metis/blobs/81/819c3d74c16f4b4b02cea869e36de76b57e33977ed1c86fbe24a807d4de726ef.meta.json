@@ -1,0 +1,1 @@
+{"tool":"bash","source":"cp /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs /tmp/builder_backup.rs && cat /tmp/builder_backup.rs","original_size":8684,"stored_size":8684,"compressed":false,"created_at":1777861599,"content_type":null}

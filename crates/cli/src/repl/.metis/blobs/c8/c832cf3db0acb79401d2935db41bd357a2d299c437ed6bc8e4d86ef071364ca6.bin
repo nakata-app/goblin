@@ -1,0 +1,87 @@
+[TOOL_RESULT]
+edited /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs (1 replacement)
+--- a//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
++++ b//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
+@@ -222,54 +222,50 @@
+-    // Defer guard so we always restore the terminal.
+-    let guard = scopeguard::guard((), |_| {
+-        let _ = disable_raw_mode();
+-    });
+ 
+     let mut selected = 0usize;
+ 
+     loop {
+         // ── render ──────────────────────────────────────────────
+         write!(stdout, "{}\r\n", prompt)?;
+         for (i, opt) in options.iter().enumerate() {
+             if i == selected {
+                 write!(stdout, "\x1b[7m {}. {} \x1b[0m\r\n", i + 1, opt)?;
+             } else {
+                 write!(stdout, " {}. {}\r\n", i + 1, opt)?;
+             }
+         }
+         // Move cursor back up so we can redraw on the next iteration.
+         let lines = options.len() + 1; // prompt + one per option
+         write!(stdout, "{}", cursor::MoveUp(lines as u16))?;
+         stdout.flush()?;
+ 
+         // ── input ────────────────────────────────────────────────
+         match event::read()? {
+             Event::Key(kv) if kv.kind == KeyEventKind::Press => match kv.code {
+                 KeyCode::Up | KeyCode::Char('k') => {
+                     selected = selected.saturating_sub(1);
+                 }
+                 KeyCode::Down | KeyCode::Char('j') => {
+                     selected = selected.saturating_add(1).min(options.len() - 1);
+                 }
+                 KeyCode::Enter => {
+                     // Clear the rendered menu.
+                     let clear_lines = options.len() + 1;
+                     write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                     for _ in 0..clear_lines {
+                         write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+                         write!(stdout, "{}", cursor::MoveDown(1))?;
+                     }
+                     write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                     stdout.flush()?;
+                     drop(guard);
+                     return Ok(options[selected].to_string());
+                 }
+                 KeyCode::Esc | KeyCode::Char('q') => {
+                     drop(guard);
+                     return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                 }
+                 _ => {}
+             },
+             _ => {}
+         }
+     }
+ }
+
+FILE NOW (`/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`, snippet around edit):
+(... 212 earlier line(s) elided ...)
+213	                }
+214	            }
+215	        }))
+216	}
+217	
+218	/// Show an interactive terminal menu. Renders the prompt and a numbered
+219	/// list of options; the user navigates with ↑/↓ and confirms with Enter.
+220	/// Returns the selected option text, or `io::Error` if the terminal
+221	/// is not available or raw-mode fails.
+222	pub fn ask_user(prompt: &str, options: &[&str]) -> io::Result<String> {
+223	    let mut stdout = io::stdout();
+224	    enable_raw_mode()?;
+225	
+226	    let mut selected = 0usize;
+227	
+228	    loop {
+229	        // ── render ──────────────────────────────────────────────
+230	        write!(stdout, "{}\r\n", prompt)?;
+231	        for (i, opt) in options.iter().enumerate() {
+232	            if i == selected {
+233	                write!(stdout, "\x1b[7m {}. {} \x1b[0m\r\n", i + 1, opt)?;
+234	            } else {
+(... 40 later line(s) elided ...)
+(file state is current — do NOT re-read `/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`; trust the snippet above)
+[/TOOL_RESULT]

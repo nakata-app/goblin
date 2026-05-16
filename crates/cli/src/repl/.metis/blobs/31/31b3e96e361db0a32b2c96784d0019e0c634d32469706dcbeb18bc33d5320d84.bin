@@ -1,0 +1,91 @@
+     1	  30:/// the REPL entry point and `/clear` both want.
+     2	  31:#[allow(clippy::too_many_arguments)]
+     3	  32:pub(super) fn build_agent<'a>(
+     4	  33:    client: &'a dyn ChatProvider,
+     5	  34:    registry: &'a ToolRegistry,
+     6	  35:    workspace: &Path,
+     7	  36:    config: AgentConfig,
+     8	  37:    permission: Arc<dyn Permission>,
+     9	  38:    session: Option<SessionStore>,
+    10	  39:    plan_state: Option<Arc<Mutex<metis_core::PlanState>>>,
+    11	  40:    md: Arc<Mutex<MdRenderer>>,
+    12	  41:    spawner_client: Arc<dyn ChatProvider>,
+    13	  42:    spawner_registry: Arc<ToolRegistry>,
+    14	  43:    sandbox: metis_core::SandboxMode,
+    15	  44:    spinner: Arc<ThinkingSpinner>,
+    16	  45:    #[cfg(unix)] overlay: Arc<InputOverlay>,
+    17	  46:    #[cfg(feature = "ctx")] blob_handles: Option<(
+    18	  47:        Arc<metis_core::BlobStore>,
+    19	  48:        Arc<metis_core::BlobIndex>,
+    20	  49:    )>,
+    21	  50:) -> Result<Agent<'a>> {
+    22	  51:    let session = match session {
+    23	  52:        Some(s) => s,
+    24	  53:        None => {
+    25	  54:            let id = SessionStore::new_id();
+    26	  55:            let s = SessionStore::open(workspace, &id).context("could not open REPL session")?;
+    27	  56:            eprintln!("\x1b[1;32m[metis] repl session={id}\x1b[0m");
+    28	  57:            s
+    29	  58:        }
+    30	  59:    };
+    31	  60:    let mut ctx = ToolContext::new(workspace.to_path_buf()).with_user_input(std::sync::Arc::new(
+    32	  61:        |_question, options| {
+    33	  62:            // Temporarily restore echo so the user can see what they type.
+    34	  63:            #[cfg(unix)]
+    35	  64:            let saved = {
+    36	  65:                unsafe {
+    37	  66:                    let mut t: libc::termios = std::mem::zeroed();
+    38	  67:                    if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+    39	  68:                        let s = t;
+    40	  69:                        t.c_lflag |= libc::ECHO;
+    41	  70:                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    42	  71:                        Some(s)
+    43	  72:                    } else {
+    44	  73:                        None
+    45	  74:                    }
+    46	  75:                }
+    47	  76:            };
+    48	  77:
+    49	  78:            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+    50	  79:            let _ = std::io::stderr().flush();
+    51	  80:            let mut line = String::new();
+    52	  81:            match std::io::stdin().read_line(&mut line) {
+    53	  82:                Ok(0) | Err(_) => {
+    54	  83:                    #[cfg(unix)]
+    55	  84:                    if let Some(t) = saved {
+    56	  85:                        unsafe {
+    57	  86:                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    58	  87:                        }
+    59	  88:                    }
+    60	  89:                    None
+    61	  90:                }
+    62	  91:                Ok(_) => {
+    63	  92:                    #[cfg(unix)]
+    64	  93:                    if let Some(t) = saved {
+    65	  94:                        unsafe {
+    66	  95:                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    67	  96:                        }
+    68	  97:                    }
+    69	  98:                    let trimmed = line.trim().to_string();
+    70	  99:                    if trimmed.is_empty() {
+    71	 100:                        return None;
+    72	 101:                    }
+    73	 102:                    // If options exist and user typed a number, resolve it.
+    74	 103:                    if !options.is_empty() {
+    75	 104:                        if let Ok(n) = trimmed.parse::<usize>() {
+    76	 105:                            if n >= 1 && n <= options.len() {
+    77	 106:                                return Some(options[n - 1].clone());
+    78	 107:                            }
+    79	 108:                        }
+    80	 109:                    }
+    81	 110:                    Some(trimmed)
+    82	 111:                }
+    83	 112:            }
+    84	 113:        },
+    85	 114:    ));
+    86	 115:    if let Some(ps) = plan_state {
+    87	 116:        ctx = ctx.with_plan_state(ps);
+    88	 117:    }
+    89	 118:    ctx.bash.sandbox = sandbox;
+    90	 119:    let hooks = metis_core::load_hooks(workspace);
+    91	 120:    ctx = ctx.with_hooks(hooks);

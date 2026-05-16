@@ -1,0 +1,100 @@
+    60	    let mut ctx = ToolContext::new(workspace.to_path_buf()).with_user_input(std::sync::Arc::new(
+    61	        |_question, options| {
+    62	            // Temporarily restore echo so the user can see what they type.
+    63	            #[cfg(unix)]
+    64	            let saved = {
+    65	                unsafe {
+    66	                    let mut t: libc::termios = std::mem::zeroed();
+    67	                    if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+    68	                        let s = t;
+    69	                        t.c_lflag |= libc::ECHO;
+    70	                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    71	                        Some(s)
+    72	                    } else {
+    73	                        None
+    74	                    }
+    75	                }
+    76	            };
+    77	
+    78	            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+    79	            let _ = std::io::stderr().flush();
+    80	            let mut line = String::new();
+    81	            match std::io::stdin().read_line(&mut line) {
+    82	                Ok(0) | Err(_) => {
+    83	                    #[cfg(unix)]
+    84	                    if let Some(t) = saved {
+    85	                        unsafe {
+    86	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    87	                        }
+    88	                    }
+    89	                    None
+    90	                }
+    91	                Ok(_) => {
+    92	                    #[cfg(unix)]
+    93	                    if let Some(t) = saved {
+    94	                        unsafe {
+    95	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    96	                        }
+    97	                    }
+    98	                    let trimmed = line.trim().to_string();
+    99	                    if trimmed.is_empty() {
+   100	                        return None;
+   101	                    }
+   102	                    // If options exist and user typed a number, resolve it.
+   103	                    if !options.is_empty() {
+   104	                        if let Ok(n) = trimmed.parse::<usize>() {
+   105	                            if n >= 1 && n <= options.len() {
+   106	                                return Some(options[n - 1].clone());
+   107	                            }
+   108	                        }
+   109	                    }
+   110	                    Some(trimmed)
+   111	                }
+   112	            }
+   113	        },
+   114	    ));
+   115	    if let Some(ps) = plan_state {
+   116	        ctx = ctx.with_plan_state(ps);
+   117	    }
+   118	    ctx.bash.sandbox = sandbox;
+   119	    let hooks = metis_core::load_hooks(workspace);
+   120	    ctx = ctx.with_hooks(hooks);
+   121	
+   122	    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+   123	    // can fan out work onto subagents. See `crate::agent_spawner` for the
+   124	    // single source of truth shared by REPL/TUI/one-shot/IDE.
+   125	    let spawner = agent_spawner::build(
+   126	        Arc::clone(&spawner_client),
+   127	        Arc::clone(&spawner_registry),
+   128	        workspace,
+   129	        config.clone(),
+   130	        Arc::clone(&permission),
+   131	        ctx.background_agents.clone(),
+   132	    );
+   133	    ctx = ctx.with_agent_spawner(spawner);
+   134	
+   135	    const SR: &str = "\x1b[0m";
+   136	
+   137	    let mut agent = Agent::new(client, registry, ctx, config)
+   138	        .with_permission(permission)
+   139	        .with_guardrail(metis_core::guardrail::load_default(workspace))
+   140	        .with_session(session);
+   141	    #[cfg(feature = "ctx")]
+   142	    if let Some((store, index)) = blob_handles {
+   143	        agent = agent.with_blob_handles(store, index);
+   144	    }
+   145	    Ok(agent
+   146	        .with_stream_callback({
+   147	            let md = Arc::clone(&md);
+   148	            let spinner = Arc::clone(&spinner);
+   149	            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+   150	            move |event| {
+   151	                spinner.note_event();
+   152	                match event {
+   153	                StreamEvent::TextDelta(text) => {
+   154	                    #[cfg(unix)] overlay.before_output();
+   155	                    // Hold term_lock while writing to stdout so the overlay
+   156	                    // thread's stderr writes cannot interleave and corrupt
+   157	                    // the terminal cursor / scroll region.
+   158	                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+   159	                    if let Ok(mut r) = md.lock() {

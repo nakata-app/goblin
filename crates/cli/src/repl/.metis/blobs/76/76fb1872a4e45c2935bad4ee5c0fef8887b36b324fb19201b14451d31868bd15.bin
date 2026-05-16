@@ -1,0 +1,49 @@
+[TOOL_RESULT]
+[stdout]
+                    let canonical = canonical_tool_name(&name);
+                    let arg = format_tool_call(&name, &arguments_preview);
+                    eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+                }
+                StreamEvent::ToolResult {
+                    name: _,
+                    preview,
+                    is_error,
+                } => {
+                    let trimmed_preview = trim_tool_preview(&preview);
+                    #[cfg(unix)] overlay.before_output();
+                    // Drop empty previews entirely — `[stdout]` with no
+                    // body should not produce a hanging `⎿` line.
+                    if trimmed_preview.is_empty() {
+                        #[cfg(unix)] overlay.after_output();
+                    } else if is_error {
+                        eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    } else {
+                        eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    }
+                }
+                StreamEvent::Usage(_) => {}
+                StreamEvent::RetryReset => {
+                    if let Ok(mut r) = md.lock() {
+                        // Preserve the provider-specific dedup setting
+                        // across a retry — rebuilding the renderer from
+                        // scratch would re-enable long-line dedup on
+                        // z.ai / GLM sessions and swallow verbatim
+                        // repeated lines again.
+                        let keep_dedup = r.dedup_enabled();
+                        *r = crate::markdown::MdRenderer::new();
+                        r.set_dedup_enabled(keep_dedup);
+                    }
+                    #[cfg(unix)] overlay.before_output();
+                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+                }
+            }
+        }))
+}
+[exit] 0
+[rerun: b14]
+
+[/TOOL_RESULT]

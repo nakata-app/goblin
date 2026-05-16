@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/api",
+    "crates/core",
+    "crates/cli",
+    "crates/mcp",
+    "crates/mcp-obsidian",
+    "crates/features/multi_model",
+]
+
+[workspace.package]
+version = "0.9.0"
+edition = "2021"
+license = "MIT"
+authors = ["nakata"]
+description = "Goblin — Desktop AI Agent"
+repository = "https://github.com/nakata-app/goblin"
+rust-version = "1.78"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+regex = "1"
+glob = "0.3"
+toml = "0.8"
+dirs = "5"
+pdf-extract = "0.7"
+base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
+rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
+libc = "0.2"
+wasmtime = { version = "28", default-features = false, features = ["cranelift", "async", "runtime"] }
+wasmtime-wasi = "28"
+wat = "1"
+regorus = { version = "0.9", default-features = false, features = ["std", "arc"] }
+tantivy = "0.22"
+blake3 = "1"
+zstd = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

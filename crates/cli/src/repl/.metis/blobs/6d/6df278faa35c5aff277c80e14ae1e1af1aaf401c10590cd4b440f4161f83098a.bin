@@ -1,0 +1,46 @@
+[TOOL_RESULT]
+   170	                    let canonical = canonical_tool_name(&name);
+   171	                    let arg = format_tool_call(&name, &arguments_preview);
+   172	                    eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+   173	                }
+   174	                StreamEvent::ToolResult {
+   175	                    name: _,
+   176	                    preview,
+   177	                    is_error,
+   178	                } => {
+   179	                    let trimmed_preview = trim_tool_preview(&preview);
+   180	                    #[cfg(unix)] overlay.before_output();
+   181	                    // Drop empty previews entirely — `[stdout]` with no
+   182	                    // body should not produce a hanging `⎿` line.
+   183	                    if trimmed_preview.is_empty() {
+   184	                        #[cfg(unix)] overlay.after_output();
+   185	                    } else if is_error {
+   186	                        eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+   187	                        #[cfg(unix)] overlay.after_output();
+   188	                    } else {
+   189	                        eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+   190	                        #[cfg(unix)] overlay.after_output();
+   191	                    }
+   192	                }
+   193	                StreamEvent::Usage(_) => {}
+   194	                StreamEvent::RetryReset => {
+   195	                    if let Ok(mut r) = md.lock() {
+   196	                        // Preserve the provider-specific dedup setting
+   197	                        // across a retry — rebuilding the renderer from
+   198	                        // scratch would re-enable long-line dedup on
+   199	                        // z.ai / GLM sessions and swallow verbatim
+   200	                        // repeated lines again.
+   201	                        let keep_dedup = r.dedup_enabled();
+   202	                        *r = crate::markdown::MdRenderer::new();
+   203	                        r.set_dedup_enabled(keep_dedup);
+   204	                    }
+   205	                    #[cfg(unix)] overlay.before_output();
+   206	                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+   207	                    let _ = std::io::stderr().flush();
+   208	                }
+   209	                }
+   210	            }
+   211	        }))
+   212	}
+
+[/TOOL_RESULT]

@@ -1,0 +1,55 @@
+[TOOL_RESULT]
+edited /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs (1 replacement)
+--- a//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
++++ b//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
+@@ -259,13 +259,13 @@
+-                    drop(guard);
++                    disable_raw_mode()?;
+                     return Ok(options[selected].to_string());
+                 }
+                 KeyCode::Esc | KeyCode::Char('q') => {
+-                    drop(guard);
++                    disable_raw_mode()?;
+                     return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                 }
+                 _ => {}
+             },
+             _ => {}
+         }
+     }
+ }
+
+FILE NOW (`/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`, snippet around edit):
+(... 244 earlier line(s) elided ...)
+245	            Event::Key(kv) if kv.kind == KeyEventKind::Press => match kv.code {
+246	                KeyCode::Up | KeyCode::Char('k') => {
+247	                    selected = selected.saturating_sub(1);
+248	                }
+249	                KeyCode::Down | KeyCode::Char('j') => {
+250	                    selected = selected.saturating_add(1).min(options.len() - 1);
+251	                }
+252	                KeyCode::Enter => {
+253	                    // Clear the rendered menu.
+254	                    let clear_lines = options.len() + 1;
+255	                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+256	                    for _ in 0..clear_lines {
+257	                        write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+258	                        write!(stdout, "{}", cursor::MoveDown(1))?;
+259	                    }
+260	                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+261	                    stdout.flush()?;
+262	                    disable_raw_mode()?;
+263	                    return Ok(options[selected].to_string());
+264	                }
+265	                KeyCode::Esc | KeyCode::Char('q') => {
+266	                    disable_raw_mode()?;
+267	                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+268	                }
+269	                _ => {}
+270	            },
+271	            _ => {}
+272	        }
+273	    }
+(... 1 later line(s) elided ...)
+(file state is current — do NOT re-read `/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`; trust the snippet above)
+[/TOOL_RESULT]

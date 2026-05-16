@@ -1,0 +1,53 @@
+[TOOL_RESULT]
+     1	//! REPL agent construction — threads the config, permission, tools,
+     2	//! and UI widgets into a ready-to-run `Agent<a>`.
+     3	//!
+     4	//! Kept separate from repl.rs so the turn loop there can focus on
+     5	//! dispatch instead of wiring. `build_agent` is the only public entry;
+     6	//! everything it returns is standard `metis_core` types.
+     7	
+     8	use std::io::Write;
+     9	use std::path::Path;
+    10	use std::sync::{Arc, Mutex};
+    11	
+    12	use anyhow::{Context, Result};
+    13	use metis_api::{ChatProvider, StreamEvent};
+    14	use metis_core::{Agent, AgentConfig, Permission, SessionStore, ToolContext, ToolRegistry};
+    15	
+    16	use crate::agent_spawner;
+    17	use crate::markdown::MdRenderer;
+    18	
+    19	use super::format::{canonical_tool_name, format_tool_call, trim_tool_preview};
+    20	#[cfg(unix)]
+    21	use super::overlay::InputOverlay;
+    22	use super::spinner::ThinkingSpinner;
+    23	
+    24	/// Builds an agent bound to a session. If `session` is `Some`, the
+    25	/// agent adopts it as-is (used by `/fork` to continue on a just-copied
+    26	/// branch). If `None`, a fresh session id is minted — the behaviour
+    27	/// the REPL entry point and `/clear` both want.
+    28	#[allow(clippy::too_many_arguments)]
+    29	pub(super) fn build_agent<'a>(
+    30	    client: &'a dyn ChatProvider,
+    31	    registry: &'a ToolRegistry,
+    32	    workspace: &Path,
+    33	    config: AgentConfig,
+    34	    permission: Arc<dyn Permission>,
+    35	    session: Option<SessionStore>,
+    36	    plan_state: Option<Arc<Mutex<metis_core::PlanState>>>,
+    37	    md: Arc<Mutex<MdRenderer>>,
+    38	    spawner_client: Arc<dyn ChatProvider>,
+    39	    spawner_registry: Arc<ToolRegistry>,
+    40	    sandbox: metis_core::SandboxMode,
+    41	    spinner: Arc<ThinkingSpinner>,
+    42	    #[cfg(unix)] overlay: Arc<InputOverlay>,
+    43	    #[cfg(feature = "ctx")] blob_handles: Option<(
+    44	        Arc<metis_core::BlobStore>,
+    45	        Arc<metis_core::BlobIndex>,
+    46	    )>,
+    47	) -> Result<Agent<'a>> {
+    48	    let session = match session {
+    49	        Some(s) => s,
+    50	        None => {
+
+[/TOOL_RESULT]

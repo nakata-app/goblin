@@ -1,0 +1,212 @@
+     1	//! REPL agent construction — threads the config, permission, tools,
+     2	//! and UI widgets into a ready-to-run `Agent<a>`.
+     3	//!
+     4	//! Kept separate from repl.rs so the turn loop there can focus on
+     5	//! dispatch instead of wiring. `build_agent` is the only public entry;
+     6	//! everything it returns is standard `metis_core` types.
+     7	
+     8	use std::io::Write;
+     9	use std::path::Path;
+    10	use std::sync::{Arc, Mutex};
+    11	
+    12	use anyhow::{Context, Result};
+    13	use metis_api::{ChatProvider, StreamEvent};
+    14	use metis_core::{Agent, AgentConfig, Permission, SessionStore, ToolContext, ToolRegistry};
+    15	
+    16	use crate::agent_spawner;
+    17	use crate::markdown::MdRenderer;
+    18	
+    19	use super::format::{canonical_tool_name, format_tool_call, trim_tool_preview};
+    20	#[cfg(unix)]
+    21	use super::overlay::InputOverlay;
+    22	use super::spinner::ThinkingSpinner;
+    23	
+    24	/// Builds an agent bound to a session. If `session` is `Some`, the
+    25	/// agent adopts it as-is (used by `/fork` to continue on a just-copied
+    26	/// branch). If `None`, a fresh session id is minted — the behaviour
+    27	/// the REPL entry point and `/clear` both want.
+    28	#[allow(clippy::too_many_arguments)]
+    29	pub(super) fn build_agent<'a>(
+    30	    client: &'a dyn ChatProvider,
+    31	    registry: &'a ToolRegistry,
+    32	    workspace: &Path,
+    33	    config: AgentConfig,
+    34	    permission: Arc<dyn Permission>,
+    35	    session: Option<SessionStore>,
+    36	    plan_state: Option<Arc<Mutex<metis_core::PlanState>>>,
+    37	    md: Arc<Mutex<MdRenderer>>,
+    38	    spawner_client: Arc<dyn ChatProvider>,
+    39	    spawner_registry: Arc<ToolRegistry>,
+    40	    sandbox: metis_core::SandboxMode,
+    41	    spinner: Arc<ThinkingSpinner>,
+    42	    #[cfg(unix)] overlay: Arc<InputOverlay>,
+    43	    #[cfg(feature = "ctx")] blob_handles: Option<(
+    44	        Arc<metis_core::BlobStore>,
+    45	        Arc<metis_core::BlobIndex>,
+    46	    )>,
+    47	) -> Result<Agent<'a>> {
+    48	    let session = match session {
+    49	        Some(s) => s,
+    50	        None => {
+    51	            let id = SessionStore::new_id();
+    52	            let s = SessionStore::open(workspace, &id).context("could not open REPL session")?;
+    53	            eprintln!("\x1b[1;32m[metis] repl session={id}\x1b[0m");
+    54	            s
+    55	        }
+    56	    };
+    57	    let mut ctx = ToolContext::new(workspace.to_path_buf()).with_user_input(std::sync::Arc::new(
+    58	        |_question, options| {
+    59	            // Temporarily restore echo so the user can see what they type.
+    60	            #[cfg(unix)]
+    61	            let saved = {
+    62	                unsafe {
+    63	                    let mut t: libc::termios = std::mem::zeroed();
+    64	                    if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+    65	                        let s = t;
+    66	                        t.c_lflag |= libc::ECHO;
+    67	                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    68	                        Some(s)
+    69	                    } else {
+    70	                        None
+    71	                    }
+    72	                }
+    73	            };
+    74	
+    75	            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+    76	            let _ = std::io::stderr().flush();
+    77	            let mut line = String::new();
+    78	            match std::io::stdin().read_line(&mut line) {
+    79	                Ok(0) | Err(_) => {
+    80	                    #[cfg(unix)]
+    81	                    if let Some(t) = saved {
+    82	                        unsafe {
+    83	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    84	                        }
+    85	                    }
+    86	                    None
+    87	                }
+    88	                Ok(_) => {
+    89	                    #[cfg(unix)]
+    90	                    if let Some(t) = saved {
+    91	                        unsafe {
+    92	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    93	                        }
+    94	                    }
+    95	                    let trimmed = line.trim().to_string();
+    96	                    if trimmed.is_empty() {
+    97	                        return None;
+    98	                    }
+    99	                    // If options exist and user typed a number, resolve it.
+   100	                    if !options.is_empty() {
+   101	                        if let Ok(n) = trimmed.parse::<usize>() {
+   102	                            if n >= 1 && n <= options.len() {
+   103	                                return Some(options[n - 1].clone());
+   104	                            }
+   105	                        }
+   106	                    }
+   107	                    Some(trimmed)
+   108	                }
+   109	            }
+   110	        },
+   111	    ));
+   112	    if let Some(ps) = plan_state {
+   113	        ctx = ctx.with_plan_state(ps);
+   114	    }
+   115	    ctx.bash.sandbox = sandbox;
+   116	    let hooks = metis_core::load_hooks(workspace);
+   117	    ctx = ctx.with_hooks(hooks);
+   118	
+   119	    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+   120	    // can fan out work onto subagents. See `crate::agent_spawner` for the
+   121	    // single source of truth shared by REPL/TUI/one-shot/IDE.
+   122	    let spawner = agent_spawner::build(
+   123	        Arc::clone(&spawner_client),
+   124	        Arc::clone(&spawner_registry),
+   125	        workspace,
+   126	        config.clone(),
+   127	        Arc::clone(&permission),
+   128	        ctx.background_agents.clone(),
+   129	    );
+   130	    ctx = ctx.with_agent_spawner(spawner);
+   131	
+   132	    const SR: &str = "\x1b[0m";
+   133	
+   134	    let mut agent = Agent::new(client, registry, ctx, config)
+   135	        .with_permission(permission)
+   136	        .with_guardrail(metis_core::guardrail::load_default(workspace))
+   137	        .with_session(session);
+   138	    #[cfg(feature = "ctx")]
+   139	    if let Some((store, index)) = blob_handles {
+   140	        agent = agent.with_blob_handles(store, index);
+   141	    }
+   142	    Ok(agent
+   143	        .with_stream_callback({
+   144	            let md = Arc::clone(&md);
+   145	            let spinner = Arc::clone(&spinner);
+   146	            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+   147	            move |event| {
+   148	                spinner.note_event();
+   149	                match event {
+   150	                StreamEvent::TextDelta(text) => {
+   151	                    #[cfg(unix)] overlay.before_output();
+   152	                    // Hold term_lock while writing to stdout so the overlay
+   153	                    // thread's stderr writes cannot interleave and corrupt
+   154	                    // the terminal cursor / scroll region.
+   155	                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+   156	                    if let Ok(mut r) = md.lock() {
+   157	                        r.push(&text);
+   158	                    }
+   159	                }
+   160	                StreamEvent::ThinkingDelta(_text) => {}
+   161	                StreamEvent::ToolCall {
+   162	                    name,
+   163	                    arguments_preview,
+   164	                } => {
+   165	                    if let Ok(mut r) = md.lock() {
+   166	                        r.finish();
+   167	                    }
+   168	                    let _ = std::io::stdout().flush();
+   169	                    #[cfg(unix)] overlay.before_output();
+   170	                    let canonical = canonical_tool_name(&name);
+   171	                    let arg = format_tool_call(&name, &arguments_preview);
+   172	                    eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+   173	                }
+   174	                StreamEvent::ToolResult {
+   175	                    name: _,
+   176	                    preview,
+   177	                    is_error,
+   178	                } => {
+   179	                    let trimmed_preview = trim_tool_preview(&preview);
+   180	                    #[cfg(unix)] overlay.before_output();
+   181	                    // Drop empty previews entirely — `[stdout]` with no
+   182	                    // body should not produce a hanging `⎿` line.
+   183	                    if trimmed_preview.is_empty() {
+   184	                        #[cfg(unix)] overlay.after_output();
+   185	                    } else if is_error {
+   186	                        eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+   187	                        #[cfg(unix)] overlay.after_output();
+   188	                    } else {
+   189	                        eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+   190	                        #[cfg(unix)] overlay.after_output();
+   191	                    }
+   192	                }
+   193	                StreamEvent::Usage(_) => {}
+   194	                StreamEvent::RetryReset => {
+   195	                    if let Ok(mut r) = md.lock() {
+   196	                        // Preserve the provider-specific dedup setting
+   197	                        // across a retry — rebuilding the renderer from
+   198	                        // scratch would re-enable long-line dedup on
+   199	                        // z.ai / GLM sessions and swallow verbatim
+   200	                        // repeated lines again.
+   201	                        let keep_dedup = r.dedup_enabled();
+   202	                        *r = crate::markdown::MdRenderer::new();
+   203	                        r.set_dedup_enabled(keep_dedup);
+   204	                    }
+   205	                    #[cfg(unix)] overlay.before_output();
+   206	                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+   207	                    let _ = std::io::stderr().flush();
+   208	                }
+   209	                }
+   210	            }
+   211	        }))
+   212	}

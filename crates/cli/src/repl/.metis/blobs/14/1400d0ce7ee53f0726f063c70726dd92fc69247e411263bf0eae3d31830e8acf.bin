@@ -1,0 +1,83 @@
+[TOOL_RESULT]
+    35	    session: Option<SessionStore>,
+    36	    plan_state: Option<Arc<Mutex<metis_core::PlanState>>>,
+    37	    md: Arc<Mutex<MdRenderer>>,
+    38	    spawner_client: Arc<dyn ChatProvider>,
+    39	    spawner_registry: Arc<ToolRegistry>,
+    40	    sandbox: metis_core::SandboxMode,
+    41	    spinner: Arc<ThinkingSpinner>,
+    42	    #[cfg(unix)] overlay: Arc<InputOverlay>,
+    43	    #[cfg(feature = "ctx")] blob_handles: Option<(
+    44	        Arc<metis_core::BlobStore>,
+    45	        Arc<metis_core::BlobIndex>,
+    46	    )>,
+    47	) -> Result<Agent<'a>> {
+    48	    let session = match session {
+    49	        Some(s) => s,
+    50	        None => {
+    51	            let id = SessionStore::new_id();
+    52	            let s = SessionStore::open(workspace, &id).context("could not open REPL session")?;
+    53	            eprintln!("\x1b[1;32m[metis] repl session={id}\x1b[0m");
+    54	            s
+    55	        }
+    56	    };
+    57	    let mut ctx = ToolContext::new(workspace.to_path_buf()).with_user_input(std::sync::Arc::new(
+    58	        |_question, options| {
+    59	            // Temporarily restore echo so the user can see what they type.
+    60	            #[cfg(unix)]
+    61	            let saved = {
+    62	                unsafe {
+    63	                    let mut t: libc::termios = std::mem::zeroed();
+    64	                    if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+    65	                        let s = t;
+    66	                        t.c_lflag |= libc::ECHO;
+    67	                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    68	                        Some(s)
+    69	                    } else {
+    70	                        None
+    71	                    }
+    72	                }
+    73	            };
+    74	
+    75	            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+    76	            let _ = std::io::stderr().flush();
+    77	            let mut line = String::new();
+    78	            match std::io::stdin().read_line(&mut line) {
+    79	                Ok(0) | Err(_) => {
+    80	                    #[cfg(unix)]
+    81	                    if let Some(t) = saved {
+    82	                        unsafe {
+    83	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    84	                        }
+    85	                    }
+    86	                    None
+    87	                }
+    88	                Ok(_) => {
+    89	                    #[cfg(unix)]
+    90	                    if let Some(t) = saved {
+    91	                        unsafe {
+    92	                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+    93	                        }
+    94	                    }
+    95	                    let trimmed = line.trim().to_string();
+    96	                    if trimmed.is_empty() {
+    97	                        return None;
+    98	                    }
+    99	                    // If options exist and user typed a number, resolve it.
+   100	                    if !options.is_empty() {
+   101	                        if let Ok(n) = trimmed.parse::<usize>() {
+   102	                            if n >= 1 && n <= options.len() {
+   103	                                return Some(options[n - 1].clone());
+   104	                            }
+   105	                        }
+   106	                    }
+   107	                    Some(trimmed)
+   108	                }
+   109	            }
+   110	        },
+   111	    ));
+   112	    if let Some(ps) = plan_state {
+   113	        ctx = ctx.with_plan_state(ps);
+   114	    }
+
+[/TOOL_RESULT]

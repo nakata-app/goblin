@@ -1,0 +1,11 @@
+{
+  "type": "json",
+  "description": "Her bir read_line kullanımının satır numarası, prompt metni ve varsa seçenek listesi",
+  "usages": [
+    {
+      "line": 78,
+      "prompt": "  \u001b[38;2;122;240;227m>\u001b[0m ",
+      "options": []
+    }
+  ]
+}

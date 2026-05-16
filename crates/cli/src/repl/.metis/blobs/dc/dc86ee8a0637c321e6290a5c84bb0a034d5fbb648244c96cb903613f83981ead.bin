@@ -1,0 +1,67 @@
+[TOOL_RESULT]
+[stdout]
+        },
+    ));
+    if let Some(ps) = plan_state {
+        ctx = ctx.with_plan_state(ps);
+    }
+    ctx.bash.sandbox = sandbox;
+    let hooks = metis_core::load_hooks(workspace);
+    ctx = ctx.with_hooks(hooks);
+
+    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+    // can fan out work onto subagents. See `crate::agent_spawner` for the
+    // single source of truth shared by REPL/TUI/one-shot/IDE.
+    let spawner = agent_spawner::build(
+        Arc::clone(&spawner_client),
+        Arc::clone(&spawner_registry),
+        workspace,
+        config.clone(),
+        Arc::clone(&permission),
+        ctx.background_agents.clone(),
+    );
+    ctx = ctx.with_agent_spawner(spawner);
+
+    const SR: &str = "\x1b[0m";
+
+    let mut agent = Agent::new(client, registry, ctx, config)
+        .with_permission(permission)
+        .with_guardrail(metis_core::guardrail::load_default(workspace))
+        .with_session(session);
+    #[cfg(feature = "ctx")]
+    if let Some((store, index)) = blob_handles {
+        agent = agent.with_blob_handles(store, index);
+    }
+    Ok(agent
+        .with_stream_callback({
+            let md = Arc::clone(&md);
+            let spinner = Arc::clone(&spinner);
+            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+            move |event| {
+                spinner.note_event();
+                match event {
+                StreamEvent::TextDelta(text) => {
+                    #[cfg(unix)] overlay.before_output();
+                    // Hold term_lock while writing to stdout so the overlay
+                    // thread's stderr writes cannot interleave and corrupt
+                    // the terminal cursor / scroll region.
+                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+                    if let Ok(mut r) = md.lock() {
+                        r.push(&text);
+                    }
+                }
+                StreamEvent::ThinkingDelta(_text) => {}
+                StreamEvent::ToolCall {
+                    name,
+                    arguments_preview,
+                } => {
+                    if let Ok(mut r) = md.lock() {
+                        r.finish();
+                    }
+                    let _ = std::io::stdout().flush();
+                    #[cfg(unix)] overlay.before_output();
+                    let canonical = canonical_tool_name(&name);
+[exit] 0
+[rerun: b13]
+
+[/TOOL_RESULT]

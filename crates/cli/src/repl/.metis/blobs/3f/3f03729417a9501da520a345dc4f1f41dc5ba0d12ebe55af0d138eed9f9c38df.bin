@@ -1,0 +1,234 @@
+[TOOL_RESULT]
+edited /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs (1 replacement)
+--- a//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
++++ b//Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs
+@@ -75,196 +75,165 @@
+-            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+-            let _ = std::io::stderr().flush();
+-            let mut line = String::new();
+-            match std::io::stdin().read_line(&mut line) {
+-                Ok(0) | Err(_) => {
+-                    #[cfg(unix)]
+-                    if let Some(t) = saved {
+-                        unsafe {
+-                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+-                        }
+-                    }
+-                    None
+-                }
+-                Ok(_) => {
+-                    #[cfg(unix)]
+-                    if let Some(t) = saved {
+-                        unsafe {
+-                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+-                        }
+-                    }
+-                    let trimmed = line.trim().to_string();
+-                    if trimmed.is_empty() {
+-                        return None;
+-                    }
+-                    // If options exist and user typed a number, resolve it.
+-                    if !options.is_empty() {
+-                        if let Ok(n) = trimmed.parse::<usize>() {
+-                            if n >= 1 && n <= options.len() {
+-                                return Some(options[n - 1].clone());
+-                            }
+-                        }
+-                    }
+-                    Some(trimmed)
+-                }
++            match ask_user(_question, options) {
++                Ok(s) => Some(s),
++                Err(_) => None,
+             }
+         },
+     ));
+     if let Some(ps) = plan_state {
+         ctx = ctx.with_plan_state(ps);
+     }
+     ctx.bash.sandbox = sandbox;
+     let hooks = metis_core::load_hooks(workspace);
+     ctx = ctx.with_hooks(hooks);
+ 
+     // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+     // can fan out work onto subagents. See `crate::agent_spawner` for the
+     // single source of truth shared by REPL/TUI/one-shot/IDE.
+     let spawner = agent_spawner::build(
+         Arc::clone(&spawner_client),
+         Arc::clone(&spawner_registry),
+         workspace,
+         config.clone(),
+         Arc::clone(&permission),
+         ctx.background_agents.clone(),
+     );
+     ctx = ctx.with_agent_spawner(spawner);
+ 
+     const SR: &str = "\x1b[0m";
+ 
+     let mut agent = Agent::new(client, registry, ctx, config)
+         .with_permission(permission)
+         .with_guardrail(metis_core::guardrail::load_default(workspace))
+         .with_session(session);
+     #[cfg(feature = "ctx")]
+     if let Some((store, index)) = blob_handles {
+         agent = agent.with_blob_handles(store, index);
+     }
+     Ok(agent
+         .with_stream_callback({
+             let md = Arc::clone(&md);
+             let spinner = Arc::clone(&spinner);
+             #[cfg(unix)] let overlay = Arc::clone(&overlay);
+             move |event| {
+                 spinner.note_event();
+                 match event {
+                 StreamEvent::TextDelta(text) => {
+                     #[cfg(unix)] overlay.before_output();
+                     // Hold term_lock while writing to stdout so the overlay
+                     // thread's stderr writes cannot interleave and corrupt
+                     // the terminal cursor / scroll region.
+                     #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+                     if let Ok(mut r) = md.lock() {
+                         r.push(&text);
+                     }
+                 }
+                 StreamEvent::ThinkingDelta(_text) => {}
+                 StreamEvent::ToolCall {
+                     name,
+                     arguments_preview,
+                 } => {
+                     if let Ok(mut r) = md.lock() {
+                         r.finish();
+                     }
+                     let _ = std::io::stdout().flush();
+                     #[cfg(unix)] overlay.before_output();
+                     let canonical = canonical_tool_name(&name);
+                     let arg = format_tool_call(&name, &arguments_preview);
+                     eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+                 }
+                 StreamEvent::ToolResult {
+                     name: _,
+                     preview,
+                     is_error,
+                 } => {
+                     let trimmed_preview = trim_tool_preview(&preview);
+                     #[cfg(unix)] overlay.before_output();
+                     // Drop empty previews entirely — `[stdout]` with no
+                     // body should not produce a hanging `⎿` line.
+                     if trimmed_preview.is_empty() {
+                         #[cfg(unix)] overlay.after_output();
+                     } else if is_error {
+                         eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+                         #[cfg(unix)] overlay.after_output();
+                     } else {
+                         eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+                         #[cfg(unix)] overlay.after_output();
+                     }
+                 }
+                 StreamEvent::Usage(_) => {}
+                 StreamEvent::RetryReset => {
+                     if let Ok(mut r) = md.lock() {
+                         // Preserve the provider-specific dedup setting
+                         // across a retry — rebuilding the renderer from
+                         // scratch would re-enable long-line dedup on
+                         // z.ai / GLM sessions and swallow verbatim
+                         // repeated lines again.
+                         let keep_dedup = r.dedup_enabled();
+                         *r = crate::markdown::MdRenderer::new();
+                         r.set_dedup_enabled(keep_dedup);
+                     }
+                     #[cfg(unix)] overlay.before_output();
+                     eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+                     let _ = std::io::stderr().flush();
+                 }
+                 }
+             }
+         }))
+ }
+ 
+ /// Show an interactive terminal menu. Renders the prompt and a numbered
+ /// list of options; the user navigates with ↑/↓ and confirms with Enter.
+ /// Returns the selected option text, or `io::Error` if the terminal
+ /// is not available or raw-mode fails.
+ pub fn ask_user(prompt: &str, options: &[&str]) -> io::Result<String> {
+     let mut stdout = io::stdout();
+     enable_raw_mode()?;
+ 
+     let mut selected = 0usize;
+ 
+     loop {
+         // ── render ──────────────────────────────────────────────
+         write!(stdout, "{}\r\n", prompt)?;
+         for (i, opt) in options.iter().enumerate() {
+             if i == selected {
+                 write!(stdout, "\x1b[7m {}. {} \x1b[0m\r\n", i + 1, opt)?;
+             } else {
+                 write!(stdout, " {}. {}\r\n", i + 1, opt)?;
+             }
+         }
+         // Move cursor back up so we can redraw on the next iteration.
+         let lines = options.len() + 1; // prompt + one per option
+         write!(stdout, "{}", cursor::MoveUp(lines as u16))?;
+         stdout.flush()?;
+ 
+         // ── input ────────────────────────────────────────────────
+         match event::read()? {
+             Event::Key(kv) if kv.kind == KeyEventKind::Press => match kv.code {
+                 KeyCode::Up | KeyCode::Char('k') => {
+                     selected = selected.saturating_sub(1);
+                 }
+                 KeyCode::Down | KeyCode::Char('j') => {
+                     selected = selected.saturating_add(1).min(options.len() - 1);
+                 }
+                 KeyCode::Enter => {
+                     // Clear the rendered menu.
+                     let clear_lines = options.len() + 1;
+                     write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                     for _ in 0..clear_lines {
+                         write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+                         write!(stdout, "{}", cursor::MoveDown(1))?;
+                     }
+                     write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                     stdout.flush()?;
+                     disable_raw_mode()?;
+                     return Ok(options[selected].to_string());
+                 }
+                 KeyCode::Esc | KeyCode::Char('q') => {
+                     disable_raw_mode()?;
+                     return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                 }
+                 _ => {}
+             },
+             _ => {}
+         }
+     }
+ }
+
+FILE NOW (`/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`, snippet around edit):
+(... 67 earlier line(s) elided ...)
+68	                        let s = t;
+69	                        t.c_lflag |= libc::ECHO;
+70	                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+71	                        Some(s)
+72	                    } else {
+73	                        None
+74	                    }
+75	                }
+76	            };
+77	
+78	            match ask_user(_question, options) {
+79	                Ok(s) => Some(s),
+80	                Err(_) => None,
+81	            }
+82	        },
+83	    ));
+84	    if let Some(ps) = plan_state {
+85	        ctx = ctx.with_plan_state(ps);
+86	    }
+87	    ctx.bash.sandbox = sandbox;
+88	    let hooks = metis_core::load_hooks(workspace);
+89	    ctx = ctx.with_hooks(hooks);
+90	
+91	    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+(... 151 later line(s) elided ...)
+(file state is current — do NOT re-read `/Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs`; trust the snippet above)
+[/TOOL_RESULT]

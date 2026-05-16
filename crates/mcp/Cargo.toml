@@ -1,0 +1,18 @@
+[package]
+name = "aegis-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Minimal async JSON-RPC 2.0 stdio client for Model Context Protocol servers."
+keywords = ["mcp", "json-rpc", "stdio", "agent", "llm"]
+categories = ["command-line-utilities", "api-bindings"]
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true

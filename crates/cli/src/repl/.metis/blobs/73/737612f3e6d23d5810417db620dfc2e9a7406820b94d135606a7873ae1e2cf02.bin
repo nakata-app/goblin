@@ -1,0 +1,60 @@
+[TOOL_RESULT]
+[stdout]
+Found at line 221: pub fn ask_user(prompt: &str, options: &[&str]) -> io::Result<String> {
+221:pub fn ask_user(prompt: &str, options: &[&str]) -> io::Result<String> {
+222:    let mut stdout = io::stdout();
+223:    enable_raw_mode()?;
+224:
+225:    let mut selected = 0usize;
+226:
+227:    loop {
+228:        // ── render ──────────────────────────────────────────────
+229:        write!(stdout, "{}\r\n", prompt)?;
+230:        for (i, opt) in options.iter().enumerate() {
+231:            if i == selected {
+232:                write!(stdout, "\x1b[7m {}. {} \x1b[0m\r\n", i + 1, opt)?;
+233:            } else {
+234:                write!(stdout, " {}. {}\r\n", i + 1, opt)?;
+235:            }
+236:        }
+237:        // Move cursor back up so we can redraw on the next iteration.
+238:        let lines = options.len() + 1; // prompt + one per option
+239:        write!(stdout, "{}", cursor::MoveUp(lines as u16))?;
+240:        stdout.flush()?;
+241:
+242:        // ── input ────────────────────────────────────────────────
+243:        match event::read()? {
+244:            Event::Key(kv) if kv.kind == KeyEventKind::Press => match kv.code {
+245:                KeyCode::Up | KeyCode::Char('k') => {
+246:                    selected = selected.saturating_sub(1);
+247:                }
+248:                KeyCode::Down | KeyCode::Char('j') => {
+249:                    selected = selected.saturating_add(1).min(options.len() - 1);
+250:                }
+251:                KeyCode::Enter => {
+252:                    // Clear the rendered menu.
+253:                    let clear_lines = options.len() + 1;
+254:                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+255:                    for _ in 0..clear_lines {
+256:                        write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+257:                        write!(stdout, "{}", cursor::MoveDown(1))?;
+258:                    }
+259:                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+260:                    stdout.flush()?;
+261:                    disable_raw_mode()?;
+262:                    return Ok(options[selected].to_string());
+263:                }
+264:                KeyCode::Esc | KeyCode::Char('q') => {
+265:                    disable_raw_mode()?;
+266:                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+267:                }
+268:                _ => {}
+269:            },
+270:            _ => {}
+271:        }
+272:    }
+273:}
+[exit] 0
+[rerun: b29]
+
+[/TOOL_RESULT]

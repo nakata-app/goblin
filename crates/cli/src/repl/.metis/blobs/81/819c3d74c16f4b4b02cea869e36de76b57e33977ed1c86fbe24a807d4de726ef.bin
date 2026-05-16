@@ -1,0 +1,215 @@
+[stdout]
+//! REPL agent construction — threads the config, permission, tools,
+//! and UI widgets into a ready-to-run `Agent<a>`.
+//!
+//! Kept separate from repl.rs so the turn loop there can focus on
+//! dispatch instead of wiring. `build_agent` is the only public entry;
+//! everything it returns is standard `metis_core` types.
+
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, Result};
+use metis_api::{ChatProvider, StreamEvent};
+use metis_core::{Agent, AgentConfig, Permission, SessionStore, ToolContext, ToolRegistry};
+
+use crate::agent_spawner;
+use crate::markdown::MdRenderer;
+
+use super::format::{canonical_tool_name, format_tool_call, trim_tool_preview};
+#[cfg(unix)]
+use super::overlay::InputOverlay;
+use super::spinner::ThinkingSpinner;
+
+/// Builds an agent bound to a session. If `session` is `Some`, the
+/// agent adopts it as-is (used by `/fork` to continue on a just-copied
+/// branch). If `None`, a fresh session id is minted — the behaviour
+/// the REPL entry point and `/clear` both want.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_agent<'a>(
+    client: &'a dyn ChatProvider,
+    registry: &'a ToolRegistry,
+    workspace: &Path,
+    config: AgentConfig,
+    permission: Arc<dyn Permission>,
+    session: Option<SessionStore>,
+    plan_state: Option<Arc<Mutex<metis_core::PlanState>>>,
+    md: Arc<Mutex<MdRenderer>>,
+    spawner_client: Arc<dyn ChatProvider>,
+    spawner_registry: Arc<ToolRegistry>,
+    sandbox: metis_core::SandboxMode,
+    spinner: Arc<ThinkingSpinner>,
+    #[cfg(unix)] overlay: Arc<InputOverlay>,
+    #[cfg(feature = "ctx")] blob_handles: Option<(
+        Arc<metis_core::BlobStore>,
+        Arc<metis_core::BlobIndex>,
+    )>,
+) -> Result<Agent<'a>> {
+    let session = match session {
+        Some(s) => s,
+        None => {
+            let id = SessionStore::new_id();
+            let s = SessionStore::open(workspace, &id).context("could not open REPL session")?;
+            eprintln!("\x1b[1;32m[metis] repl session={id}\x1b[0m");
+            s
+        }
+    };
+    let mut ctx = ToolContext::new(workspace.to_path_buf()).with_user_input(std::sync::Arc::new(
+        |_question, options| {
+            // Temporarily restore echo so the user can see what they type.
+            #[cfg(unix)]
+            let saved = {
+                unsafe {
+                    let mut t: libc::termios = std::mem::zeroed();
+                    if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+                        let s = t;
+                        t.c_lflag |= libc::ECHO;
+                        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            eprint!("  \x1b[38;2;122;240;227m>\x1b[0m ");
+            let _ = std::io::stderr().flush();
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    #[cfg(unix)]
+                    if let Some(t) = saved {
+                        unsafe {
+                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+                        }
+                    }
+                    None
+                }
+                Ok(_) => {
+                    #[cfg(unix)]
+                    if let Some(t) = saved {
+                        unsafe {
+                            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+                        }
+                    }
+                    let trimmed = line.trim().to_string();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    // If options exist and user typed a number, resolve it.
+                    if !options.is_empty() {
+                        if let Ok(n) = trimmed.parse::<usize>() {
+                            if n >= 1 && n <= options.len() {
+                                return Some(options[n - 1].clone());
+                            }
+                        }
+                    }
+                    Some(trimmed)
+                }
+            }
+        },
+    ));
+    if let Some(ps) = plan_state {
+        ctx = ctx.with_plan_state(ps);
+    }
+    ctx.bash.sandbox = sandbox;
+    let hooks = metis_core::load_hooks(workspace);
+    ctx = ctx.with_hooks(hooks);
+
+    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+    // can fan out work onto subagents. See `crate::agent_spawner` for the
+    // single source of truth shared by REPL/TUI/one-shot/IDE.
+    let spawner = agent_spawner::build(
+        Arc::clone(&spawner_client),
+        Arc::clone(&spawner_registry),
+        workspace,
+        config.clone(),
+        Arc::clone(&permission),
+        ctx.background_agents.clone(),
+    );
+    ctx = ctx.with_agent_spawner(spawner);
+
+    const SR: &str = "\x1b[0m";
+
+    let mut agent = Agent::new(client, registry, ctx, config)
+        .with_permission(permission)
+        .with_guardrail(metis_core::guardrail::load_default(workspace))
+        .with_session(session);
+    #[cfg(feature = "ctx")]
+    if let Some((store, index)) = blob_handles {
+        agent = agent.with_blob_handles(store, index);
+    }
+    Ok(agent
+        .with_stream_callback({
+            let md = Arc::clone(&md);
+            let spinner = Arc::clone(&spinner);
+            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+            move |event| {
+                spinner.note_event();
+                match event {
+                StreamEvent::TextDelta(text) => {
+                    #[cfg(unix)] overlay.before_output();
+                    // Hold term_lock while writing to stdout so the overlay
+                    // thread's stderr writes cannot interleave and corrupt
+                    // the terminal cursor / scroll region.
+                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+                    if let Ok(mut r) = md.lock() {
+                        r.push(&text);
+                    }
+                }
+                StreamEvent::ThinkingDelta(_text) => {}
+                StreamEvent::ToolCall {
+                    name,
+                    arguments_preview,
+                } => {
+                    if let Ok(mut r) = md.lock() {
+                        r.finish();
+                    }
+                    let _ = std::io::stdout().flush();
+                    #[cfg(unix)] overlay.before_output();
+                    let canonical = canonical_tool_name(&name);
+                    let arg = format_tool_call(&name, &arguments_preview);
+                    eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+                }
+                StreamEvent::ToolResult {
+                    name: _,
+                    preview,
+                    is_error,
+                } => {
+                    let trimmed_preview = trim_tool_preview(&preview);
+                    #[cfg(unix)] overlay.before_output();
+                    // Drop empty previews entirely — `[stdout]` with no
+                    // body should not produce a hanging `⎿` line.
+                    if trimmed_preview.is_empty() {
+                        #[cfg(unix)] overlay.after_output();
+                    } else if is_error {
+                        eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    } else {
+                        eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    }
+                }
+                StreamEvent::Usage(_) => {}
+                StreamEvent::RetryReset => {
+                    if let Ok(mut r) = md.lock() {
+                        // Preserve the provider-specific dedup setting
+                        // across a retry — rebuilding the renderer from
+                        // scratch would re-enable long-line dedup on
+                        // z.ai / GLM sessions and swallow verbatim
+                        // repeated lines again.
+                        let keep_dedup = r.dedup_enabled();
+                        *r = crate::markdown::MdRenderer::new();
+                        r.set_dedup_enabled(keep_dedup);
+                    }
+                    #[cfg(unix)] overlay.before_output();
+                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+                }
+            }
+        }))
+}
+[exit] 0
+[rerun: b8]

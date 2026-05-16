@@ -1,0 +1,1 @@
+{"tool":"bash","source":"cat -n /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs | head -130","original_size":5949,"stored_size":5949,"compressed":false,"created_at":1777861751,"content_type":null}

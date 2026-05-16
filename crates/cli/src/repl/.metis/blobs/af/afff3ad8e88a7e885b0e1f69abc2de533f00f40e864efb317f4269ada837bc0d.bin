@@ -1,0 +1,103 @@
+[stdout]
+        ctx = ctx.with_plan_state(ps);
+    }
+    ctx.bash.sandbox = sandbox;
+    let hooks = metis_core::load_hooks(workspace);
+    ctx = ctx.with_hooks(hooks);
+
+    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+    // can fan out work onto subagents. See `crate::agent_spawner` for the
+    // single source of truth shared by REPL/TUI/one-shot/IDE.
+    let spawner = agent_spawner::build(
+        Arc::clone(&spawner_client),
+        Arc::clone(&spawner_registry),
+        workspace,
+        config.clone(),
+        Arc::clone(&permission),
+        ctx.background_agents.clone(),
+    );
+    ctx = ctx.with_agent_spawner(spawner);
+
+    const SR: &str = "\x1b[0m";
+
+    let mut agent = Agent::new(client, registry, ctx, config)
+        .with_permission(permission)
+        .with_guardrail(metis_core::guardrail::load_default(workspace))
+        .with_session(session);
+    #[cfg(feature = "ctx")]
+    if let Some((store, index)) = blob_handles {
+        agent = agent.with_blob_handles(store, index);
+    }
+    Ok(agent
+        .with_stream_callback({
+            let md = Arc::clone(&md);
+            let spinner = Arc::clone(&spinner);
+            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+            move |event| {
+                spinner.note_event();
+                match event {
+                StreamEvent::TextDelta(text) => {
+                    #[cfg(unix)] overlay.before_output();
+                    // Hold term_lock while writing to stdout so the overlay
+                    // thread's stderr writes cannot interleave and corrupt
+                    // the terminal cursor / scroll region.
+                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+                    if let Ok(mut r) = md.lock() {
+                        r.push(&text);
+                    }
+                }
+                StreamEvent::ThinkingDelta(_text) => {}
+                StreamEvent::ToolCall {
+                    name,
+                    arguments_preview,
+                } => {
+                    if let Ok(mut r) = md.lock() {
+                        r.finish();
+                    }
+                    let _ = std::io::stdout().flush();
+                    #[cfg(unix)] overlay.before_output();
+                    let canonical = canonical_tool_name(&name);
+                    let arg = format_tool_call(&name, &arguments_preview);
+                    eprintln!("\x1b[38;2;220;220;210m●{SR} \x1b[38;2;220;220;210m{canonical}{SR}\x1b[2m  {arg}{SR}");
+                }
+                StreamEvent::ToolResult {
+                    name: _,
+                    preview,
+                    is_error,
+                } => {
+                    let trimmed_preview = trim_tool_preview(&preview);
+                    #[cfg(unix)] overlay.before_output();
+                    // Drop empty previews entirely — `[stdout]` with no
+                    // body should not produce a hanging `⎿` line.
+                    if trimmed_preview.is_empty() {
+                        #[cfg(unix)] overlay.after_output();
+                    } else if is_error {
+                        eprintln!("  \x1b[31m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    } else {
+                        eprintln!("  \x1b[2m⎿ {trimmed_preview}{SR}");
+                        #[cfg(unix)] overlay.after_output();
+                    }
+                }
+                StreamEvent::Usage(_) => {}
+                StreamEvent::RetryReset => {
+                    if let Ok(mut r) = md.lock() {
+                        // Preserve the provider-specific dedup setting
+                        // across a retry — rebuilding the renderer from
+                        // scratch would re-enable long-line dedup on
+                        // z.ai / GLM sessions and swallow verbatim
+                        // repeated lines again.
+                        let keep_dedup = r.dedup_enabled();
+                        *r = crate::markdown::MdRenderer::new();
+                        r.set_dedup_enabled(keep_dedup);
+                    }
+                    #[cfg(unix)] overlay.before_output();
+                    eprint!("\r\x1b[2K\x1b[2m(retrying…){SR}\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                }
+                }
+            }
+        }))
+}
+[exit] 0
+[rerun: b10]

@@ -1,0 +1,70 @@
+[TOOL_RESULT]
+[stdout]
+                    let _ = std::io::stderr().flush();
+                }
+                }
+            }
+        }))
+}
+
+/// Show an interactive terminal menu. Renders the prompt and a numbered
+/// list of options; the user navigates with ↑/↓ and confirms with Enter.
+/// Returns the selected option text, or `io::Error` if the terminal
+/// is not available or raw-mode fails.
+pub fn ask_user(prompt: &str, options: &[&str]) -> io::Result<String> {
+    let mut stdout = io::stdout();
+    enable_raw_mode()?;
+
+    let mut selected = 0usize;
+
+    loop {
+        // ── render ──────────────────────────────────────────────
+        write!(stdout, "{}\r\n", prompt)?;
+        for (i, opt) in options.iter().enumerate() {
+            if i == selected {
+                write!(stdout, "\x1b[7m {}. {} \x1b[0m\r\n", i + 1, opt)?;
+            } else {
+                write!(stdout, " {}. {}\r\n", i + 1, opt)?;
+            }
+        }
+        // Move cursor back up so we can redraw on the next iteration.
+        let lines = options.len() + 1; // prompt + one per option
+        write!(stdout, "{}", cursor::MoveUp(lines as u16))?;
+        stdout.flush()?;
+
+        // ── input ────────────────────────────────────────────────
+        match event::read()? {
+            Event::Key(kv) if kv.kind == KeyEventKind::Press => match kv.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = selected.saturating_add(1).min(options.len() - 1);
+                }
+                KeyCode::Enter => {
+                    // Clear the rendered menu.
+                    let clear_lines = options.len() + 1;
+                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                    for _ in 0..clear_lines {
+                        write!(stdout, "{}", Clear(ClearType::CurrentLine))?;
+                        write!(stdout, "{}", cursor::MoveDown(1))?;
+                    }
+                    write!(stdout, "{}", cursor::MoveUp(clear_lines as u16))?;
+                    stdout.flush()?;
+                    disable_raw_mode()?;
+                    return Ok(options[selected].to_string());
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    disable_raw_mode()?;
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+[exit] 0
+[rerun: b5]
+
+[/TOOL_RESULT]

@@ -1,0 +1,63 @@
+[TOOL_RESULT]
+   110	        },
+   111	    ));
+   112	    if let Some(ps) = plan_state {
+   113	        ctx = ctx.with_plan_state(ps);
+   114	    }
+   115	    ctx.bash.sandbox = sandbox;
+   116	    let hooks = metis_core::load_hooks(workspace);
+   117	    ctx = ctx.with_hooks(hooks);
+   118	
+   119	    // Wire the shared agent-spawner so `agent` and `parallel_agents` tools
+   120	    // can fan out work onto subagents. See `crate::agent_spawner` for the
+   121	    // single source of truth shared by REPL/TUI/one-shot/IDE.
+   122	    let spawner = agent_spawner::build(
+   123	        Arc::clone(&spawner_client),
+   124	        Arc::clone(&spawner_registry),
+   125	        workspace,
+   126	        config.clone(),
+   127	        Arc::clone(&permission),
+   128	        ctx.background_agents.clone(),
+   129	    );
+   130	    ctx = ctx.with_agent_spawner(spawner);
+   131	
+   132	    const SR: &str = "\x1b[0m";
+   133	
+   134	    let mut agent = Agent::new(client, registry, ctx, config)
+   135	        .with_permission(permission)
+   136	        .with_guardrail(metis_core::guardrail::load_default(workspace))
+   137	        .with_session(session);
+   138	    #[cfg(feature = "ctx")]
+   139	    if let Some((store, index)) = blob_handles {
+   140	        agent = agent.with_blob_handles(store, index);
+   141	    }
+   142	    Ok(agent
+   143	        .with_stream_callback({
+   144	            let md = Arc::clone(&md);
+   145	            let spinner = Arc::clone(&spinner);
+   146	            #[cfg(unix)] let overlay = Arc::clone(&overlay);
+   147	            move |event| {
+   148	                spinner.note_event();
+   149	                match event {
+   150	                StreamEvent::TextDelta(text) => {
+   151	                    #[cfg(unix)] overlay.before_output();
+   152	                    // Hold term_lock while writing to stdout so the overlay
+   153	                    // thread's stderr writes cannot interleave and corrupt
+   154	                    // the terminal cursor / scroll region.
+   155	                    #[cfg(unix)] let _term_lk = overlay.term_lock.lock().unwrap();
+   156	                    if let Ok(mut r) = md.lock() {
+   157	                        r.push(&text);
+   158	                    }
+   159	                }
+   160	                StreamEvent::ThinkingDelta(_text) => {}
+   161	                StreamEvent::ToolCall {
+   162	                    name,
+   163	                    arguments_preview,
+   164	                } => {
+   165	                    if let Ok(mut r) = md.lock() {
+   166	                        r.finish();
+   167	                    }
+   168	                    let _ = std::io::stdout().flush();
+   169	                    #[cfg(unix)] overlay.before_output();
+
+[/TOOL_RESULT]

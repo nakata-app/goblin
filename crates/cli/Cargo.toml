@@ -1,0 +1,45 @@
+[package]
+name = "goblin-terminal"
+default-run = "goblin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Goblin terminal CLI"
+rust-version.workspace = true
+
+[[bin]]
+name = "goblin"
+path = "src/main.rs"
+
+[dependencies]
+aegis-api = { path = "../api", version = "0.9.0" }
+aegis-core = { path = "../core", version = "0.9.0" }
+aegis-multi-model = { path = "../features/multi_model", version = "0.1.0" }
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rustyline.workspace = true
+libc.workspace = true
+dirs.workspace = true
+tokio.workspace = true
+toml.workspace = true
+reqwest.workspace = true
+walkdir.workspace = true
+regex.workspace = true
+futures.workspace = true
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = { version = "0.28", features = ["events", "event-stream"] }
+
+[features]
+default = ["ctx", "policy"]
+# Forward to aegis-core's `wasm` feature (WASI sandbox + wasm_run tool).
+wasm = ["aegis-core/wasm"]
+# Forward to aegis-core's `policy` feature (Rego policy gate).
+policy = ["aegis-core/policy"]
+# Forward to aegis-core's `ctx` feature (blob store + FTS index + sandbox wrapper).
+ctx = ["aegis-core/ctx"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,1 @@
+{"tool":"bash","source":"metis ctx show 1498dbda0d3356d7 2>/dev/null || sed -n '1,212p' /Users/macmini/Projects/aegis-cli/crates/cli/src/repl/builder.rs","original_size":8684,"stored_size":8684,"compressed":false,"created_at":1777861578,"content_type":null}
