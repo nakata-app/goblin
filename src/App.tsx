@@ -542,10 +542,21 @@ function App() {
 
       {onboardOpen && !showSessionPicker && (
         <div className="onboard-toast">
-          <div className="onboard-step"><span className="onboard-num">1</span> Choose a model — header pill toggles <strong>Fast</strong> / <strong>Pro</strong></div>
-          <div className="onboard-step"><span className="onboard-num">2</span> Hit <kbd>⌘K</kbd> for the command palette, or just type</div>
-          <div className="onboard-step"><span className="onboard-num">3</span> Press <kbd>⌘/</kbd> any time to see all shortcuts</div>
-          <button className="onboard-dismiss" onClick={dismissOnboarding}>Got it</button>
+          <div className="onboard-step">
+            <span className="onboard-num">1</span>
+            <span>
+              <strong>Proje klasörünü seç</strong> — Goblin dosyalarını okur, kod yazar, git'i anlar
+            </span>
+            <button
+              className={`onboard-pick-btn ${cwd ? 'onboard-pick-done' : ''}`}
+              onClick={handlePickDirectory}
+            >
+              {cwd ? `✓ ${cwd.split('/').pop()}` : '📁 Seç'}
+            </button>
+          </div>
+          <div className="onboard-step"><span className="onboard-num">2</span> Model seç — header'daki pill <strong>Fast</strong> / <strong>Pro</strong> değiştirir</div>
+          <div className="onboard-step"><span className="onboard-num">3</span> <kbd>⌘K</kbd> komut paleti, <kbd>⌘/</kbd> tüm kısayollar</div>
+          <button className="onboard-dismiss" onClick={dismissOnboarding}>Anladım</button>
         </div>
       )}
 
