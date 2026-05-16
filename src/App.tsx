@@ -17,7 +17,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ConfigPanel } from './components/ConfigPanel';
 import { Sidebar } from './components/Sidebar';
 import { SessionPicker } from './components/SessionPicker';
-import { WhatsappPanel } from './components/WhatsappPanel';
+// WhatsappPanel is WIP — import lives in feature/whatsapp branch only
 import { TabBar } from './components/TabBar';
 import type { GoblinState } from './types';
 import './styles/app.css';
@@ -159,7 +159,6 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
-  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(() => {
@@ -565,10 +564,6 @@ function App() {
         onToggle={() => setConfigOpen((v) => !v)}
       />
 
-      <WhatsappPanel
-        isOpen={whatsappOpen}
-        onToggle={() => setWhatsappOpen(false)}
-      />
 
       {showSessionPicker && (
         <SessionPicker
@@ -620,7 +615,6 @@ function App() {
             <button className="header-btn" onClick={() => setSidebarOpen(true)}>sessions</button>
             <button className="header-btn" onClick={() => setCmdOpen(true)}>⌘K</button>
             <button className="header-btn" onClick={() => setConfigOpen(true)} title="Settings">⚙</button>
-            <button className="header-btn" onClick={() => setWhatsappOpen(true)} title="WhatsApp">💬</button>
             <button className="header-btn" onClick={() => clearConversation()}>clear</button>
             <button className="header-btn" onClick={handleNewSession}>new</button>
           </div>
