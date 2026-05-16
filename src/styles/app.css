@@ -92,6 +92,19 @@ body.tauri-overlay .panel-chat .panel-header {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.project-btn {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-btn-active {
+  color: var(--text-primary);
+  border-color: rgba(100, 220, 120, 0.25);
+  background: rgba(100, 220, 120, 0.06);
+}
+
 .header-btn:disabled {
   opacity: 0.3;
   cursor: default;
@@ -3272,10 +3285,35 @@ input[type="checkbox"] {
 }
 
 .onboard-step {
-  display: flex; align-items: flex-start; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.5;
+}
+
+.onboard-pick-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--text-secondary);
+  padding: 3px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.onboard-pick-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text-primary);
+}
+
+.onboard-pick-done {
+  border-color: rgba(16, 185, 129, 0.4);
+  color: var(--accent);
+  background: rgba(16, 185, 129, 0.08);
 }
 
 .onboard-step strong { color: var(--accent); font-weight: 600; }
@@ -3429,3 +3467,105 @@ button.tool-badge {
 button.tool-badge:hover {
   transform: translateY(-1px);
 }
+
+/* ── ProjectPicker ── */
+.pp-wrap { position: relative; }
+
+.pp-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 280px;
+  background: var(--surface-2, #1a1a1a);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 200;
+  overflow: hidden;
+}
+
+.pp-inline {
+  width: 100%;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.pp-root-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.pp-root-label {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text-muted, #666);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-root-change {
+  background: none;
+  border: none;
+  color: var(--text-muted, #666);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+}
+.pp-root-change:hover { color: var(--text-primary); background: rgba(255,255,255,0.07); }
+
+.pp-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.pp-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.pp-item:hover { background: rgba(255,255,255,0.05); }
+.pp-item-active { background: rgba(16,185,129,0.08) !important; }
+
+.pp-item-check { color: var(--accent, #10b981); font-size: 11px; width: 12px; flex-shrink: 0; }
+.pp-item-name { flex: 1; font-size: 12px; color: var(--text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-item-meta { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.pp-branch { font-size: 10px; color: var(--text-muted, #666); font-family: var(--font-mono); }
+.pp-time { font-size: 10px; color: var(--text-muted, #555); }
+
+.pp-empty { padding: 12px 10px; font-size: 12px; color: var(--text-muted, #666); display: flex; flex-direction: column; gap: 8px; }
+
+.pp-browse {
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.pp-browse:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+
+.onboard-step-col { flex-direction: column; align-items: flex-start !important; }
+.onboard-step-header { display: flex; align-items: center; gap: 8px; }
+.onboard-cwd-ok { color: var(--accent, #10b981); font-size: 11px; margin-left: 4px; }

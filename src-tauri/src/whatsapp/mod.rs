@@ -83,6 +83,19 @@ impl WhatsappBridge {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let auth_dir = std::path::PathBuf::from(&home).join(".goblin").join("whatsapp-auth");
 
+        // Install dependencies on first run (or after node_modules is wiped)
+        if !bridge_dir.join("node_modules").exists() {
+            let install = tokio::process::Command::new("npm")
+                .arg("install")
+                .current_dir(&bridge_dir)
+                .status()
+                .await
+                .map_err(|e| format!("npm install failed: {}", e))?;
+            if !install.success() {
+                return Err("npm install exited with non-zero status".to_string());
+            }
+        }
+
         let child = Command::new("node")
             .arg("index.js")
             .current_dir(&bridge_dir)
@@ -119,7 +132,6 @@ impl WhatsappBridge {
     }
 
     /// Check if bridge is running
-    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         self.health_check().await.is_ok()
     }

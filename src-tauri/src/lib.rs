@@ -91,12 +91,170 @@ fn deserialize_conversation(jsonl: &str) -> Vec<provider::Message> {
         .collect()
 }
 
+/// Proje dizininden bağlam bloğu üretir: dosya listesi + git branch.
+/// Agent'ın "nerede çalıştığını" bilmesini sağlar.
+fn build_project_context(cwd: &str) -> Option<String> {
+    let path = std::path::Path::new(cwd);
+    if !path.is_dir() {
+        return None;
+    }
+
+    let skip = ["target", "node_modules", "dist", "build", ".git", "out", ".next"];
+    let mut names: Vec<String> = std::fs::read_dir(cwd)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || skip.contains(&name.as_str()) {
+                return None;
+            }
+            let suffix = if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { "/" } else { "" };
+            Some(format!("{}{}", name, suffix))
+        })
+        .collect();
+    names.sort();
+
+    let git_info = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|b| {
+            let branch = b.trim().to_string();
+            let status = std::process::Command::new("git")
+                .args(["status", "--short"])
+                .current_dir(cwd)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default();
+            let changed: Vec<&str> = status.lines().take(8).collect();
+            if changed.is_empty() {
+                format!("Git branch: {} (temiz)", branch)
+            } else {
+                format!("Git branch: {}\nDeğişen: {}", branch, changed.join(", "))
+            }
+        });
+
+    let mut ctx = format!(
+        "## Aktif Proje\nÇalışma dizini: {}\n\nDosya yapısı:\n{}\n",
+        cwd,
+        names.iter().map(|n| format!("  {}", n)).collect::<Vec<_>>().join("\n")
+    );
+    if let Some(git) = git_info {
+        ctx.push('\n');
+        ctx.push_str(&git);
+        ctx.push('\n');
+    }
+    Some(ctx)
+}
+
+#[derive(serde::Serialize)]
+struct ProjectInfo {
+    name: String,
+    path: String,
+    branch: Option<String>,
+    last_commit: u64,
+}
+
+#[tauri::command]
+async fn list_projects(root: Option<String>) -> Vec<ProjectInfo> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+
+    // Kullanıcı belirli bir root seçtiyse sadece onu tara.
+    // Seçilmediyse yaygın proje klasörlerini hepsini dene.
+    let candidates: Vec<String> = if let Some(r) = root {
+        vec![r]
+    } else {
+        let common = ["Projects", "project", "dev", "code", "workspace",
+                      "src", "repos", "git", "work", "Developer", "Documents", "Desktop"];
+        let mut found: Vec<String> = common
+            .iter()
+            .map(|d| format!("{}/{}", home, d))
+            .filter(|p| std::path::Path::new(p).is_dir())
+            .collect();
+        // Ana home dizininin kendisini de tara (doğrudan altındaki git repolar)
+        found.push(home.clone());
+        found
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut projects: Vec<ProjectInfo> = candidates
+        .iter()
+        .flat_map(|root| {
+            std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if !path.is_dir() || !path.join(".git").exists() {
+                        return None;
+                    }
+                    let canonical = std::fs::canonicalize(&path).ok()?.to_string_lossy().to_string();
+                    let name = path.file_name()?.to_string_lossy().to_string();
+                    if name.starts_with('.') { return None; }
+
+                    let last_commit = std::process::Command::new("git")
+                        .args(["log", "-1", "--format=%at"])
+                        .current_dir(&path)
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    let branch = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .current_dir(&path)
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .map(|s| s.trim().to_string());
+
+                    Some((canonical, ProjectInfo {
+                        name,
+                        path: path.to_string_lossy().to_string(),
+                        branch,
+                        last_commit,
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|(canonical, info)| {
+            if seen.insert(canonical) { Some(info) } else { None }
+        })
+        .collect();
+
+    projects.sort_by(|a, b| b.last_commit.cmp(&a.last_commit));
+    projects
+}
+
+#[tauri::command]
+async fn pick_directory() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Proje Klasörü Seç")
+            .pick_folder()
+            .map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 #[tauri::command]
 async fn send_message(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     message: String,
     model: Option<String>,
+    cwd: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
     // Resolve the foreground tab's slot rather than the bootstrap one.
@@ -150,8 +308,14 @@ async fn send_message(
     });
 
     let soul = agent::soul::load_soul();
+    let project_ctx = cwd.as_deref().and_then(build_project_context);
+    let combined_soul = match (project_ctx.as_deref(), soul.as_deref()) {
+        (Some(ctx), Some(s)) => Some(format!("{}\n\n---\n\n{}", ctx, s)),
+        (Some(ctx), None)    => Some(ctx.to_string()),
+        (None, s)            => s.map(|s| s.to_string()),
+    };
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref(), &allowed_tools, &blocked_tools)
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     // Ensure progress task completes
@@ -290,6 +454,7 @@ async fn send_message_in_session(
     session_id: String,
     message: String,
     model: Option<String>,
+    cwd: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // The session-scoped send_message: look up (or fail closed for) a
     // specific session's agent. Two windows hitting two different
@@ -347,8 +512,14 @@ async fn send_message_in_session(
     });
 
     let soul = agent::soul::load_soul();
+    let project_ctx = cwd.as_deref().and_then(build_project_context);
+    let combined_soul = match (project_ctx.as_deref(), soul.as_deref()) {
+        (Some(ctx), Some(s)) => Some(format!("{}\n\n---\n\n{}", ctx, s)),
+        (Some(ctx), None)    => Some(ctx.to_string()),
+        (None, s)            => s.map(|s| s.to_string()),
+    };
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref(), &allowed_tools, &blocked_tools)
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     progress_task.abort();
@@ -1131,6 +1302,11 @@ async fn whatsapp_list_contacts(
         .map_err(|e| format!("WaDb contacts: {e}"))
 }
 
+#[tauri::command]
+async fn whatsapp_is_running(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.whatsapp.is_running().await)
+}
+
 // ── Wasm Plugin Commands ──
 
 #[tauri::command]
@@ -1747,6 +1923,9 @@ pub fn run() {
             whatsapp_get_auto_reply,
             whatsapp_get_history,
             whatsapp_list_contacts,
+            whatsapp_is_running,
+            pick_directory,
+            list_projects,
             plugin_list,
             plugin_run,
             plugin_install,

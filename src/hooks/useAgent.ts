@@ -6,6 +6,7 @@ import { useAgentStore } from '../stores/agentStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { useTabsStore } from '../stores/tabsStore';
 import { useCharacterStore } from '../stores/characterStore';
+import { useProjectStore } from '../stores/projectStore';
 import { extractLLMEmotion, llmOutputToTargets } from '../character/LLMInterpreter';
 import type { CharacterEventType } from '../character/types';
 import type { Message, ToolCall } from '../types';
@@ -243,15 +244,18 @@ export function useAgent() {
         // Route through the session-scoped command when we have a
         // session id (multi-tab path); fall back to the legacy global
         // command for cold boots where activeSessionId is still null.
+        const cwd = useProjectStore.getState().cwd;
         const response = sendSessionId
           ? await invoke<AgentResponse>('send_message_in_session', {
               sessionId: sendSessionId,
               message: text,
               model: model === 'auto' ? null : model,
+              cwd,
             })
           : await invoke<AgentResponse>('send_message', {
               message: text,
               model: model === 'auto' ? null : model,
+              cwd,
             });
 
         progressUnlisten();
