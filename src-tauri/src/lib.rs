@@ -152,6 +152,66 @@ fn build_project_context(cwd: &str) -> Option<String> {
     Some(ctx)
 }
 
+#[derive(serde::Serialize)]
+struct ProjectInfo {
+    name: String,
+    path: String,
+    branch: Option<String>,
+    last_commit: u64,
+}
+
+#[tauri::command]
+async fn list_projects(root: Option<String>) -> Vec<ProjectInfo> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let root = root.unwrap_or_else(|| format!("{}/Projects", home));
+
+    let entries = match std::fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(_) => return vec![],
+    };
+
+    let mut projects: Vec<ProjectInfo> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || !path.join(".git").exists() {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy().to_string();
+
+            // Son commit zamanı — dir mtime'dan çok daha doğru
+            let last_commit = std::process::Command::new("git")
+                .args(["log", "-1", "--format=%at"])
+                .current_dir(&path)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+
+            let branch = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&path)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string());
+
+            Some(ProjectInfo {
+                name,
+                path: path.to_string_lossy().to_string(),
+                branch,
+                last_commit,
+            })
+        })
+        .collect();
+
+    projects.sort_by(|a, b| b.last_commit.cmp(&a.last_commit));
+    projects
+}
+
 #[tauri::command]
 async fn pick_directory() -> Option<String> {
     tokio::task::spawn_blocking(|| {
@@ -1842,6 +1902,7 @@ pub fn run() {
             whatsapp_list_contacts,
             whatsapp_is_running,
             pick_directory,
+            list_projects,
             plugin_list,
             plugin_run,
             plugin_install,

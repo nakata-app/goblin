@@ -8,6 +8,7 @@ import type { TabSnapshot } from './stores/tabsStore';
 import { useAgent } from './hooks/useAgent';
 import { useGoblinState } from './hooks/useGoblinState';
 import { useProjectStore } from './stores/projectStore';
+import { ProjectPicker } from './components/ProjectPicker';
 import { ChatPanel } from './components/ChatPanel';
 import { GoblinCharacter } from './components/GoblinCharacter';
 import { GoblinLive } from './components/GoblinLive';
@@ -157,14 +158,6 @@ function App() {
   }, [setRightPanel]);
 
   const cwd = useProjectStore((s) => s.cwd);
-  const setCwd = useProjectStore((s) => s.setCwd);
-
-  const handlePickDirectory = useCallback(async () => {
-    try {
-      const path = await invoke<string | null>('pick_directory');
-      if (path) setCwd(path);
-    } catch { /* kullanıcı iptal etti */ }
-  }, [setCwd]);
 
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -542,17 +535,15 @@ function App() {
 
       {onboardOpen && !showSessionPicker && (
         <div className="onboard-toast">
-          <div className="onboard-step">
-            <span className="onboard-num">1</span>
-            <span>
-              <strong>Proje klasörünü seç</strong> — Goblin dosyalarını okur, kod yazar, git'i anlar
-            </span>
-            <button
-              className={`onboard-pick-btn ${cwd ? 'onboard-pick-done' : ''}`}
-              onClick={handlePickDirectory}
-            >
-              {cwd ? `✓ ${cwd.split('/').pop()}` : '📁 Seç'}
-            </button>
+          <div className="onboard-step onboard-step-col">
+            <div className="onboard-step-header">
+              <span className="onboard-num">1</span>
+              <span>
+                <strong>Proje seç</strong> — Goblin dosyalarını okur, kod yazar, git'i anlar
+                {cwd && <span className="onboard-cwd-ok"> ✓ {cwd.split('/').pop()}</span>}
+              </span>
+            </div>
+            <ProjectPicker inline />
           </div>
           <div className="onboard-step"><span className="onboard-num">2</span> Model seç — header'daki pill <strong>Fast</strong> / <strong>Pro</strong> değiştirir</div>
           <div className="onboard-step"><span className="onboard-num">3</span> <kbd>⌘K</kbd> komut paleti, <kbd>⌘/</kbd> tüm kısayollar</div>
@@ -606,13 +597,7 @@ function App() {
         <div className="panel-header">
           <span className="panel-header-title">goblin</span>
           <div className="panel-header-actions">
-            <button
-              className={`header-btn project-btn ${cwd ? 'project-btn-active' : ''}`}
-              onClick={handlePickDirectory}
-              title={cwd ?? 'Proje klasörü seç'}
-            >
-              {cwd ? `📁 ${cwd.split('/').pop()}` : '📁 proje'}
-            </button>
+            <ProjectPicker />
             <div className="model-picker">
               <button
                 className={`header-pill ${model.includes('pro') || model.includes('opus') || model.includes('sonnet') ? 'header-pill-pro' : 'header-pill-fast'}`}
