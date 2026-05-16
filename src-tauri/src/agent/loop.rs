@@ -137,13 +137,24 @@ impl AgentLoop {
         model_override: Option<&str>,
         progress: Option<mpsc::UnboundedSender<serde_json::Value>>,
         soul: Option<&str>,
+        allowed_tools: &[String],
+        blocked_tools: &[String],
     ) -> Result<AgentResponse, String> {
         let system_prompt = prompt::build_system_prompt(project_context, memories, learned, soul);
         let mut messages = prompt::build_messages(&system_prompt, &self.conversation, user_input);
         let pre_loop_len = messages.len();
 
         let model = model_override.unwrap_or(self.config.default_model());
-        let tools = self.tool_registry.definitions();
+        let tools = {
+            let all = self.tool_registry.definitions();
+            if !allowed_tools.is_empty() {
+                all.into_iter().filter(|t| allowed_tools.contains(&t.function.name)).collect()
+            } else if !blocked_tools.is_empty() {
+                all.into_iter().filter(|t| !blocked_tools.contains(&t.function.name)).collect()
+            } else {
+                all
+            }
+        };
 
         let mut total_tokens_in = 0u32;
         let mut total_tokens_out = 0u32;

@@ -108,7 +108,7 @@ async fn send_message(
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
 
-    let (selected_model, profile_context, matched_profile) = {
+    let (selected_model, profile_context, matched_profile, allowed_tools, blocked_tools) = {
         let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
         let base_model = if let Some(ref m) = model {
             m.clone()
@@ -119,9 +119,11 @@ async fn send_message(
             let m = profile.model.clone().unwrap_or(base_model);
             let ctx = profile.system_prompt.clone();
             let name = profile.name.clone();
-            (m, ctx, Some(name))
+            let allowed = profile.allowed_tools.clone();
+            let blocked = profile.blocked_tools.clone();
+            (m, ctx, Some(name), allowed, blocked)
         } else {
-            (base_model, None, None)
+            (base_model, None, None, vec![], vec![])
         }
     };
 
@@ -149,7 +151,7 @@ async fn send_message(
 
     let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref())
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     // Ensure progress task completes
@@ -303,7 +305,7 @@ async fn send_message_in_session(
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
 
-    let (selected_model, profile_context, matched_profile) = {
+    let (selected_model, profile_context, matched_profile, allowed_tools, blocked_tools) = {
         let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
         let base_model = if let Some(ref m) = model {
             m.clone()
@@ -314,9 +316,11 @@ async fn send_message_in_session(
             let m = profile.model.clone().unwrap_or(base_model);
             let ctx = profile.system_prompt.clone();
             let name = profile.name.clone();
-            (m, ctx, Some(name))
+            let allowed = profile.allowed_tools.clone();
+            let blocked = profile.blocked_tools.clone();
+            (m, ctx, Some(name), allowed, blocked)
         } else {
-            (base_model, None, None)
+            (base_model, None, None, vec![], vec![])
         }
     };
 
@@ -344,7 +348,7 @@ async fn send_message_in_session(
 
     let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref())
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     progress_task.abort();
@@ -757,7 +761,7 @@ async fn cron_run_now(state: State<'_, AppState>, id: String) -> Result<String, 
             Some(agent) => {
                 let soul = agent::soul::load_soul();
                 match agent
-                    .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref())
+                    .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref(), &[], &[])
                     .await
                 {
                     Ok(response) => Ok(response.content),
@@ -1196,7 +1200,7 @@ async fn cron_scheduler_loop(app: tauri::AppHandle) {
                     Some(agent) => {
                         let soul = agent::soul::load_soul();
                         agent
-                            .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref())
+                            .send_message(&job.prompt, None, &[], &[], None, None, soul.as_deref(), &[], &[])
                             .await
                             .map(|r| r.content)
                             .map_err(|e| format!("Agent error: {}", e))
@@ -1261,7 +1265,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
 
             if let Some(mut sub_agent) = init_agent(&cfg_snapshot, tool_registry) {
                 let soul = agent::soul::load_soul();
-                match sub_agent.send_message(&prompt, None, &[], &[], None, None, soul.as_deref()).await {
+                match sub_agent.send_message(&prompt, None, &[], &[], None, None, soul.as_deref(), &[], &[]).await {
                     Ok(response) => {
                         state.task_store.upsert(
                             &task.session_id, &task.id, &task.name, "done",
@@ -1364,7 +1368,7 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
                 let prompt_with_guard = format!("{}{}\n--- KULLANICI MESAJI SON ---", wa_ctx, text);
 
                 match agent
-                    .send_message(&prompt_with_guard, None, &[], &[], Some("deepseek-v4-flash"), None, soul.as_deref())
+                    .send_message(&prompt_with_guard, None, &[], &[], Some("deepseek-v4-flash"), None, soul.as_deref(), &[], &[])
                     .await
                 {
                     Ok(resp) if !resp.content.is_empty() => {
@@ -1976,7 +1980,7 @@ mod tests {
 
         let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
         let result = agent
-            .send_message("Analyze this code for bugs", None, &[], &[], None, None, None)
+            .send_message("Analyze this code for bugs", None, &[], &[], None, None, None, &[], &[])
             .await;
 
         assert!(result.is_ok());
@@ -2065,7 +2069,7 @@ mod tests {
 
             let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
             let prompt = task.prompt.clone().unwrap_or_default();
-            let result = agent.send_message(&prompt, None, &[], &[], None, None, None).await.unwrap();
+            let result = agent.send_message(&prompt, None, &[], &[], None, None, None, &[], &[]).await.unwrap();
 
             store.upsert(&task.session_id, &task.id, &task.name, "done", Some(&result.content)).unwrap();
 

@@ -571,8 +571,10 @@ impl Config {
             if path.exists() {
                 let content = fs::read_to_string(path)
                     .map_err(|e| format!("Failed to read config {:?}: {}", path, e))?;
-                return toml::from_str(&content)
-                    .map_err(|e| format!("Failed to parse config: {}", e));
+                let mut cfg: Config = toml::from_str(&content)
+                    .map_err(|e| format!("Failed to parse config: {}", e))?;
+                cfg.resolve_api_keys();
+                return Ok(cfg);
             }
         }
 
@@ -597,6 +599,50 @@ impl Config {
             channels: ChannelsConfig::default(),
             http: HttpConfig::default(),
         })
+    }
+
+    // Resolve `$ENV_VAR` references in all api_key fields.
+    // Config can store: api_key = "$GOBLIN_OPENAI_KEY" — this replaces it
+    // with the env var value at load time, so no secrets stay in memory
+    // as the raw "$..." string.
+    fn resolve_api_keys(&mut self) {
+        if let Some(ref mut c) = self.providers.openai {
+            c.api_key = Self::resolve_key(&c.api_key, "GOBLIN_OPENAI_KEY");
+            c.key_pool = c.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+        if let Some(ref mut c) = self.providers.anthropic {
+            c.api_key = Self::resolve_key(&c.api_key, "GOBLIN_ANTHROPIC_KEY");
+            c.key_pool = c.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+        if let Some(ref mut c) = self.providers.nvidia {
+            c.api_key = Self::resolve_key(&c.api_key, "GOBLIN_NVIDIA_KEY");
+            c.key_pool = c.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+        if let Some(ref mut c) = self.providers.gemini {
+            c.api_key = Self::resolve_key(&c.api_key, "GOBLIN_GEMINI_KEY");
+            c.key_pool = c.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+        if let Some(ref mut c) = self.providers.glm {
+            c.api_key = Self::resolve_key(&c.api_key, "GOBLIN_GLM_KEY");
+            c.key_pool = c.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+        for g in &mut self.providers.generic {
+            g.api_key = Self::resolve_key(&g.api_key, "");
+            g.key_pool = g.key_pool.iter().map(|k| Self::resolve_key(k, "")).collect();
+        }
+    }
+
+    // If key starts with `$`, look up that env var.
+    // If key is empty, try the fallback_env_var.
+    // Otherwise return as-is.
+    fn resolve_key(key: &str, fallback_env_var: &str) -> String {
+        if let Some(var_name) = key.strip_prefix('$') {
+            std::env::var(var_name).unwrap_or_default()
+        } else if key.is_empty() && !fallback_env_var.is_empty() {
+            std::env::var(fallback_env_var).unwrap_or_default()
+        } else {
+            key.to_string()
+        }
     }
 
     pub fn provider_name(&self) -> &str {

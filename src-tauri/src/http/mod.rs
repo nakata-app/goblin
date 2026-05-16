@@ -167,6 +167,8 @@ async fn post_message(
             selected_model.as_deref(),
             None,
             soul.as_deref(),
+            &[],
+            &[],
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
