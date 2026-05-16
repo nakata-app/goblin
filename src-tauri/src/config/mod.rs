@@ -112,6 +112,12 @@ pub struct TelegramConfig {
     /// "error" if you want a louder feed.
     #[serde(default = "default_telegram_events")]
     pub events: Vec<String>,
+    /// When true, Goblin polls for incoming messages and auto-replies.
+    #[serde(default)]
+    pub auto_reply: bool,
+    /// Comma-separated list of allowed chat_ids. Empty = only chat_id above.
+    #[serde(default)]
+    pub allowed_chat_ids: Vec<String>,
 }
 
 fn default_telegram_events() -> Vec<String> {

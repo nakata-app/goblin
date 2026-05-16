@@ -1851,6 +1851,17 @@ pub fn run() {
         }
     }
 
+    // Spawn Telegram polling loop if auto_reply is enabled.
+    {
+        let tg_cfg = config_arc.read().map(|c| c.channels.telegram.clone()).unwrap_or_default();
+        if tg_cfg.auto_reply {
+            let tg_agent = agent_arc.clone();
+            tokio::spawn(async move {
+                channel::telegram::start_polling(tg_cfg, tg_agent).await;
+            });
+        }
+    }
+
     if agent_was_none {
         eprintln!(
             "No provider configured. Create ~/.goblin/config.toml with your API keys."
