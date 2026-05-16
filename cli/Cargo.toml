@@ -1,8 +1,8 @@
 [package]
 name = "goblin-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Terminal CLI for Goblin AI"
+description = "Standalone terminal CLI for Goblin AI — no app required"
 
 [[bin]]
 name = "goblin"
@@ -10,7 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+glob = "0.3"
+regex = "1"
