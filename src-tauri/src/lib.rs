@@ -1131,6 +1131,11 @@ async fn whatsapp_list_contacts(
         .map_err(|e| format!("WaDb contacts: {e}"))
 }
 
+#[tauri::command]
+async fn whatsapp_is_running(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.whatsapp.is_running().await)
+}
+
 // ── Wasm Plugin Commands ──
 
 #[tauri::command]
@@ -1747,6 +1752,7 @@ pub fn run() {
             whatsapp_get_auto_reply,
             whatsapp_get_history,
             whatsapp_list_contacts,
+            whatsapp_is_running,
             plugin_list,
             plugin_run,
             plugin_install,
