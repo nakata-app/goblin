@@ -163,48 +163,71 @@ struct ProjectInfo {
 #[tauri::command]
 async fn list_projects(root: Option<String>) -> Vec<ProjectInfo> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let root = root.unwrap_or_else(|| format!("{}/Projects", home));
 
-    let entries = match std::fs::read_dir(&root) {
-        Ok(e) => e,
-        Err(_) => return vec![],
+    // Kullanıcı belirli bir root seçtiyse sadece onu tara.
+    // Seçilmediyse yaygın proje klasörlerini hepsini dene.
+    let candidates: Vec<String> = if let Some(r) = root {
+        vec![r]
+    } else {
+        let common = ["Projects", "project", "dev", "code", "workspace",
+                      "src", "repos", "git", "work", "Developer", "Documents", "Desktop"];
+        let mut found: Vec<String> = common
+            .iter()
+            .map(|d| format!("{}/{}", home, d))
+            .filter(|p| std::path::Path::new(p).is_dir())
+            .collect();
+        // Ana home dizininin kendisini de tara (doğrudan altındaki git repolar)
+        found.push(home.clone());
+        found
     };
 
-    let mut projects: Vec<ProjectInfo> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_dir() || !path.join(".git").exists() {
-                return None;
-            }
-            let name = path.file_name()?.to_string_lossy().to_string();
+    let mut seen = std::collections::HashSet::new();
+    let mut projects: Vec<ProjectInfo> = candidates
+        .iter()
+        .flat_map(|root| {
+            std::fs::read_dir(root)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if !path.is_dir() || !path.join(".git").exists() {
+                        return None;
+                    }
+                    let canonical = std::fs::canonicalize(&path).ok()?.to_string_lossy().to_string();
+                    let name = path.file_name()?.to_string_lossy().to_string();
+                    if name.starts_with('.') { return None; }
 
-            // Son commit zamanı — dir mtime'dan çok daha doğru
-            let last_commit = std::process::Command::new("git")
-                .args(["log", "-1", "--format=%at"])
-                .current_dir(&path)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(0);
+                    let last_commit = std::process::Command::new("git")
+                        .args(["log", "-1", "--format=%at"])
+                        .current_dir(&path)
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
 
-            let branch = std::process::Command::new("git")
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .current_dir(&path)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string());
+                    let branch = std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .current_dir(&path)
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .map(|s| s.trim().to_string());
 
-            Some(ProjectInfo {
-                name,
-                path: path.to_string_lossy().to_string(),
-                branch,
-                last_commit,
-            })
+                    Some((canonical, ProjectInfo {
+                        name,
+                        path: path.to_string_lossy().to_string(),
+                        branch,
+                        last_commit,
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter_map(|(canonical, info)| {
+            if seen.insert(canonical) { Some(info) } else { None }
         })
         .collect();
 

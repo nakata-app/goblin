@@ -76,9 +76,12 @@ export function ProjectPicker({ inline = false }: Props) {
       <div className="pp-inline">
         <div className="pp-root-row">
           <span className="pp-root-label">
-            📁 {projectsRoot ?? '~/Projects'}
+            {projectsRoot ?? 'otomatik tarama'}
           </span>
-          <button className="pp-root-change" onClick={handleChangeRoot}>değiştir</button>
+          {projectsRoot && (
+            <button className="pp-root-change" onClick={() => { setProjectsRoot(null); load(undefined); }}>sıfırla</button>
+          )}
+          <button className="pp-root-change" onClick={handleChangeRoot}>klasör seç</button>
           <button className="pp-root-change" onClick={() => load()}>↻</button>
         </div>
         <ProjectList
@@ -105,8 +108,11 @@ export function ProjectPicker({ inline = false }: Props) {
       {open && (
         <div className="pp-dropdown">
           <div className="pp-root-row">
-            <span className="pp-root-label">{projectsRoot ?? '~/Projects'}</span>
-            <button className="pp-root-change" onClick={handleChangeRoot}>değiştir</button>
+            <span className="pp-root-label">{projectsRoot ?? 'otomatik tarama'}</span>
+            {projectsRoot && (
+              <button className="pp-root-change" onClick={() => { setProjectsRoot(null); load(undefined); }}>sıfırla</button>
+            )}
+            <button className="pp-root-change" onClick={handleChangeRoot}>klasör seç</button>
             <button className="pp-root-change" onClick={() => load()}>↻</button>
           </div>
           <ProjectList
