@@ -1,4 +1,4 @@
-//! User-facing task management for `aegis`.
+//! User-facing task management for `goblin`.
 //!
 //! Simple, file-backed task list stored in `.aegis/tasks.json`. Each task
 //! has an integer id, text description, and a done/not-done flag. No

@@ -496,7 +496,7 @@ impl ReplCommand {
                                     consumed += w.len() + 1;
                                     continue;
                                 } else {
-                                    eprintln!("[aegis] swarm: N must be 2-10, got {parsed_n}");
+                                    eprintln!("[goblin] swarm: N must be 2-10, got {parsed_n}");
                                     break;
                                 }
                             }

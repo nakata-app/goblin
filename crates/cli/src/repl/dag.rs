@@ -138,7 +138,7 @@ pub(crate) fn format_session_tree(sessions: &[SessionSummary], current_id: Optio
         (None, None) => a.id.cmp(&b.id),
     });
 
-    let mut out = String::from("[aegis] session tree:\n");
+    let mut out = String::from("[goblin] session tree:\n");
 
     fn render_node(
         out: &mut String,

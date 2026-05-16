@@ -1,4 +1,4 @@
-//! Configuration file support for `aegis`.
+//! Configuration file support for `goblin`.
 //!
 //! Two config files are loaded and merged (workspace overrides global):
 //!
@@ -265,7 +265,7 @@ fn load_from_dir(dir: &Path) -> MetisConfig {
     let path = dir.join("config.toml");
     match std::fs::read_to_string(&path) {
         Ok(content) => toml::from_str(&content).unwrap_or_else(|err| {
-            eprintln!("[aegis] warning: could not parse {}: {err}", path.display());
+            eprintln!("[goblin] warning: could not parse {}: {err}", path.display());
             MetisConfig::default()
         }),
         Err(_) => MetisConfig::default(),

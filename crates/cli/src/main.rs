@@ -1,10 +1,10 @@
-//! `aegis` command-line entrypoint.
+//! `goblin` command-line entrypoint.
 //!
 //! Two modes:
 //!
 //! * **One-shot.** `aegis "do thing"` runs a single agent loop and
 //!   prints the result. Same shape since v0.1.
-//! * **REPL.** `aegis` (no positional prompt) drops into an interactive
+//! * **REPL.** `goblin` (no positional prompt) drops into an interactive
 //!   loop with slash commands, persistent on-disk session, and a
 //!   cumulative cost meter. See [`repl`].
 
@@ -77,7 +77,7 @@ fn headless_recovery_hint(err: &aegis_core::AgentError) -> &'static str {
         }
         aegis_core::AgentError::MaxTurns(_) => {
             "agent hit the per-run turn cap. Pass --resume with the same prompt to \
-             continue, or raise max_turns in metis.toml."
+             continue, or raise max_turns in goblin.toml."
         }
         aegis_core::AgentError::Api(_) => {
             "provider call failed after retry. Check API key / network, or pass \
@@ -96,9 +96,9 @@ fn headless_recovery_hint(err: &aegis_core::AgentError) -> &'static str {
         aegis_core::AgentError::Session(_) => {
             "session store error — check disk space and `.metis/sessions/` permissions."
         }
-        aegis_core::AgentError::Config(_) => "config error — fix metis.toml and restart.",
+        aegis_core::AgentError::Config(_) => "config error — fix goblin.toml and restart.",
         aegis_core::AgentError::BudgetExceeded { .. } => {
-            "cost budget exceeded — raise the limit in metis.toml or pass --budget."
+            "cost budget exceeded — raise the limit in goblin.toml or pass --budget."
         }
     }
 }
@@ -129,12 +129,12 @@ const BANNER: &str = "\
 \x1b[38;2;245;150;50m                 ▟█▉                                                                       \x1b[0m\n\
 \x1b[38;2;220;65;30m                 ▝█▘                                                                       \x1b[0m\n\
 \x1b[38;2;230;140;60m    ▂██▅▇▇▃     ▁▟▉                                           \x1b[38;2;185;185;185m                            \x1b[0m\n\
-\x1b[38;2;230;140;60m   ▗██▋▔▀▀▔     ▝▛▀        █████╗ ███████╗ ██████╗ ██╗███████╗\x1b[38;2;220;50;40m          ▁▅█▁▙  ▁          \x1b[0m\n\
-\x1b[38;2;230;140;60m   ▐███▘        █          ██╔══██╗██╔════╝██╔════╝ ██║██╔════╝\x1b[38;2;220;50;40m        ▅▟███▀▀▇▆█▖         \x1b[0m\n\
-\x1b[38;2;230;140;60m    ▔ ▏▕▚       ▝▌         ███████║█████╗  ██║  ███╗██║███████╗\x1b[38;2;220;50;40m        ██▛▂▆█▀▆██▋         \x1b[0m\n\
-\x1b[38;2;230;140;60m   ▗▋  ▕▇▎▂      ▘         ██╔══██║██╔══╝  ██║   ██║██║╚════██║\x1b[38;2;185;185;185m        ▀▜██▆▌  ██▙▌▅▎▅▏    \x1b[0m\n\
-\x1b[38;2;230;140;60m   ▐▙▁ ▅█▎ ▚▖  ▁           ██║  ██║███████╗╚██████╔╝██║███████║\x1b[38;2;185;185;185m        ▆▝███▇▆▇███▇▛▂▝     \x1b[0m\n\
-\x1b[38;2;230;140;60m   ▇▆████▊  ▜▙ ▘ ▁▂        ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝╚══════╝\x1b[38;2;185;185;185m        ▐▗██████████▀▀      \x1b[0m\n\
+\x1b[38;2;230;140;60m   ▗██▋▔▀▀▔     ▝▛▀         ██████╗  ██████╗ ██████╗ ██╗     ██╗███╗   ██╗\x1b[38;2;220;50;40m   ▁▅█▁▙  ▁          \x1b[0m\n\
+\x1b[38;2;230;140;60m   ▐███▘        █          ██╔════╝ ██╔═══██╗██╔══██╗██║     ██║████╗  ██║\x1b[38;2;220;50;40m ▅▟███▀▀▇▆█▖         \x1b[0m\n\
+\x1b[38;2;230;140;60m    ▔ ▏▕▚       ▝▌         ██║  ███╗██║   ██║██████╔╝██║     ██║██╔██╗ ██║\x1b[38;2;220;50;40m ██▛▂▆█▀▆██▋         \x1b[0m\n\
+\x1b[38;2;230;140;60m   ▗▋  ▕▇▎▂      ▘         ██║   ██║██║   ██║██╔══██╗██║     ██║██║╚██╗██║\x1b[38;2;185;185;185m ▀▜██▆▌  ██▙▌▅▎▅▏    \x1b[0m\n\
+\x1b[38;2;230;140;60m   ▐▙▁ ▅█▎ ▚▖  ▁           ╚██████╔╝╚██████╔╝██████╔╝███████╗██║██║ ╚████║\x1b[38;2;185;185;185m ▆▝███▇▆▇███▇▛▂▝     \x1b[0m\n\
+\x1b[38;2;230;140;60m   ▇▆████▊  ▜▙ ▘ ▁▂         ╚═════╝  ╚═════╝ ╚═════╝ ╚══════╝╚═╝╚═╝  ╚═══╝\x1b[38;2;185;185;185m ▐▗██████████▀▀      \x1b[0m\n\
 \x1b[38;2;230;140;60m   ▜▘▀███▍  ▟█▍▁                                              \x1b[38;2;185;185;185m        ▝▙▟████████▚▉▎      \x1b[0m\n\
 \x1b[38;2;230;140;60m     ▕▙▀█▙ ▟██▘▔ ▔                                            \x1b[38;2;185;185;185m         ▝▜███████▛▁▁▂▁▄▄▖  \x1b[0m\n\
 \x1b[38;2;230;140;60m      ██▘  ▝▜█                                                \x1b[38;2;185;185;185m           ▝▀███▆█████████▍ \x1b[0m\n\
@@ -142,7 +142,7 @@ const BANNER: &str = "\
 \x1b[38;2;230;140;60m   ▀▔▔      ▐██▇▃                                                                         \x1b[0m\
 ";
 
-const TAGLINE: &str = "\x1b[38;2;255;165;0m  the shield of reason\x1b[0m";
+const TAGLINE: &str = "\x1b[38;2;255;165;0m  your terminal AI agent\x1b[0m";
 
 fn print_banner_with_model(model: Option<&str>) {
     use std::io::IsTerminal;
@@ -258,7 +258,7 @@ enum Command {
     },
 }
 
-/// `aegis` — an honest Rust agent CLI named for the shield of Zeus.
+/// `goblin` — an honest Rust agent CLI named for the shield of Zeus.
 #[derive(Debug, Parser)]
 #[command(name = "goblin", version, about, long_about = None)]
 struct Cli {
@@ -901,7 +901,7 @@ async fn run() -> Result<()> {
                 Some(p) => p,
                 None => {
                     eprintln!(
-                        "\x1b[33m[aegis] fallback_chain: skipping `{spec}` — unknown provider `{chain_provider_id}`\x1b[0m"
+                        "\x1b[33m[goblin] fallback_chain: skipping `{spec}` — unknown provider `{chain_provider_id}`\x1b[0m"
                     );
                     continue;
                 }
@@ -916,7 +916,7 @@ async fn run() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!(
-                        "\x1b[33m[aegis] fallback_chain: skipping `{spec}` — {e}\x1b[0m"
+                        "\x1b[33m[goblin] fallback_chain: skipping `{spec}` — {e}\x1b[0m"
                     );
                 }
             }
@@ -925,7 +925,7 @@ async fn run() -> Result<()> {
             .with_event_handler(|event| match event {
                 aegis_api::FailoverEvent::SwitchedTo { from, to, reason } => {
                     eprintln!(
-                        "\x1b[33m[aegis] failover: {from} -> {to} ({reason})\x1b[0m"
+                        "\x1b[33m[goblin] failover: {from} -> {to} ({reason})\x1b[0m"
                     );
                 }
                 aegis_api::FailoverEvent::BreakerOpen {
@@ -933,17 +933,17 @@ async fn run() -> Result<()> {
                     cooldown_secs,
                 } => {
                     eprintln!(
-                        "\x1b[33m[aegis] circuit breaker open for {provider} ({cooldown_secs}s cooldown)\x1b[0m"
+                        "\x1b[33m[goblin] circuit breaker open for {provider} ({cooldown_secs}s cooldown)\x1b[0m"
                     );
                 }
                 aegis_api::FailoverEvent::LinkSkipped { provider } => {
                     eprintln!(
-                        "\x1b[33m[aegis] failover: skipping {provider} (breaker open)\x1b[0m"
+                        "\x1b[33m[goblin] failover: skipping {provider} (breaker open)\x1b[0m"
                     );
                 }
                 aegis_api::FailoverEvent::AllExhausted { last_error } => {
                     eprintln!(
-                        "\x1b[31m[aegis] failover: all providers exhausted ({last_error})\x1b[0m"
+                        "\x1b[31m[goblin] failover: all providers exhausted ({last_error})\x1b[0m"
                     );
                 }
             });
@@ -971,7 +971,7 @@ async fn run() -> Result<()> {
             Some(vp) => match vp.client_from_env() {
                 Ok(vision_client) => {
                     eprintln!(
-                        "\x1b[2m[aegis] vision fallback: image attachments will route to {} {vmodel}\x1b[0m",
+                        "\x1b[2m[goblin] vision fallback: image attachments will route to {} {vmodel}\x1b[0m",
                         vp.id
                     );
                     client = Box::new(aegis_api::VisionFallbackProvider::new(
@@ -982,13 +982,13 @@ async fn run() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!(
-                        "\x1b[33m[aegis] vision_fallback `{spec}` unavailable: {e}\x1b[0m"
+                        "\x1b[33m[goblin] vision_fallback `{spec}` unavailable: {e}\x1b[0m"
                     );
                 }
             },
             None => {
                 eprintln!(
-                    "\x1b[33m[aegis] vision_fallback `{spec}` references unknown provider — skipping\x1b[0m"
+                    "\x1b[33m[goblin] vision_fallback `{spec}` references unknown provider — skipping\x1b[0m"
                 );
             }
         }
@@ -1016,7 +1016,7 @@ async fn run() -> Result<()> {
         if let Some(configured_model) = &cfg.model {
             let normalized_config_model = crate::repl::normalize_model_name(configured_model);
             if normalized_config_model != model {
-                eprintln!("\x1b[1;32m[aegis] warning: configured model `{configured_model}` might not be supported by `{effective_provider}`. Effective model is `{model}`. Please check your config.\x1b[0m");
+                eprintln!("\x1b[1;32m[goblin] warning: configured model `{configured_model}` might not be supported by `{effective_provider}`. Effective model is `{model}`. Please check your config.\x1b[0m");
             }
         }
     }
@@ -1114,13 +1114,13 @@ async fn run() -> Result<()> {
                     }
                 }
                 Err(e) => eprintln!(
-                    "\x1b[1;32m[aegis] warning: mcp `{spec}` failed — {e} (continuing without it)\x1b[0m"
+                    "\x1b[1;32m[goblin] warning: mcp `{spec}` failed — {e} (continuing without it)\x1b[0m"
                 ),
             }
         }
         if server_count > 0 {
             eprintln!(
-                "\x1b[1;32m[aegis] {server_count} MCP server{} attached, {tool_count} tools\x1b[0m",
+                "\x1b[1;32m[goblin] {server_count} MCP server{} attached, {tool_count} tools\x1b[0m",
                 if server_count == 1 { "" } else { "s" }
             );
         }
@@ -1139,7 +1139,7 @@ async fn run() -> Result<()> {
             Ok(handles) => Some(handles),
             Err(e) => {
                 eprintln!(
-                    "\x1b[1;33m[aegis] ctx blob store unavailable ({e}); continuing without sandbox\x1b[0m"
+                    "\x1b[1;33m[goblin] ctx blob store unavailable ({e}); continuing without sandbox\x1b[0m"
                 );
                 None
             }
@@ -1164,7 +1164,7 @@ async fn run() -> Result<()> {
         };
         let s = SessionStore::open(&workspace, &id).context("could not open session store")?;
         eprintln!(
-            "[aegis] session={} ({} prior messages)",
+            "[goblin] session={} ({} prior messages)",
             id,
             s.messages().len()
         );
@@ -1176,7 +1176,7 @@ async fn run() -> Result<()> {
         let stats = s.recovery_stats();
         if stats.skipped > 0 {
             eprintln!(
-                "\x1b[1;33m[aegis] warning: {} line{} skipped while loading session (kept {}). \
+                "\x1b[1;33m[goblin] warning: {} line{} skipped while loading session (kept {}). \
                  The jsonl file may have been truncated by a previous crash — open it to verify.\x1b[0m",
                 stats.skipped,
                 if stats.skipped == 1 { "" } else { "s" },
@@ -1374,7 +1374,7 @@ async fn run() -> Result<()> {
     let mut routing_cfg = cfg.routing.clone().unwrap_or_default();
     if (cli.model.is_some() || cli.provider.is_some()) && routing_cfg.is_enabled() {
         eprintln!(
-            "\x1b[2m[aegis] routing disabled for this session (explicit --model/--provider)\x1b[0m"
+            "\x1b[2m[goblin] routing disabled for this session (explicit --model/--provider)\x1b[0m"
         );
         routing_cfg.auto_route = Some(false);
     }
@@ -1543,7 +1543,7 @@ async fn run() -> Result<()> {
                 SandboxMode::Bubblewrap => "bwrap (Linux)",
                 SandboxMode::None => "none",
             };
-            eprintln!("\x1b[2m[aegis] bash sandbox: {label}\x1b[0m");
+            eprintln!("\x1b[2m[goblin] bash sandbox: {label}\x1b[0m");
         }
         // Wrap client/registry in Arcs so the agent-spawner can capture
         // 'static handles. Without the spawner, model-driven `agent` /
@@ -1694,7 +1694,7 @@ async fn run() -> Result<()> {
         let run_result = tokio::select! {
             result = agent.run(user_input) => Some(result),
             _ = tokio::signal::ctrl_c() => {
-                eprintln!("\n[aegis] interrupted");
+                eprintln!("\n[goblin] interrupted");
                 None
             }
         };
@@ -1714,7 +1714,7 @@ async fn run() -> Result<()> {
                 // the error to anyhow — REPL has the same treatment;
                 // the headless path used to drop straight to a raw
                 // anyhow chain so the user never saw the hint.
-                eprintln!("\x1b[2m[aegis] {}\x1b[0m", headless_recovery_hint(&err));
+                eprintln!("\x1b[2m[goblin] {}\x1b[0m", headless_recovery_hint(&err));
                 Err(err).context("agent run failed")
             }
             None => Ok(()), // Ctrl+C — exit cleanly
@@ -1781,7 +1781,7 @@ async fn run() -> Result<()> {
             Some(b) if b > 0.0 => Some(b),
             Some(b) => {
                 eprintln!(
-                    "\x1b[1;33m[aegis] warning: daily_budget_usd = {b} is not positive; \
+                    "\x1b[1;33m[goblin] warning: daily_budget_usd = {b} is not positive; \
                      treating as unset\x1b[0m"
                 );
                 None
@@ -1838,8 +1838,8 @@ async fn run_deploy_command(target_arg: Option<&str>, cli: &Cli) -> Result<()> {
 async fn run_update() -> Result<()> {
     use aegis_core::update;
 
-    eprintln!("[aegis] current version: v{}", update::CURRENT_VERSION);
-    eprintln!("[aegis] checking for updates...");
+    eprintln!("[goblin] current version: v{}", update::CURRENT_VERSION);
+    eprintln!("[goblin] checking for updates...");
 
     let client = reqwest::Client::new();
     let check = update::check_latest(&client)
@@ -1847,29 +1847,29 @@ async fn run_update() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if !check.is_newer {
-        eprintln!("[aegis] already up to date (v{})", check.current);
+        eprintln!("[goblin] already up to date (v{})", check.current);
         return Ok(());
     }
 
     eprintln!(
-        "[aegis] new version available: v{} → v{}",
+        "[goblin] new version available: v{} → v{}",
         check.current, check.latest
     );
 
     if check.download_url.is_none() {
         eprintln!(
-            "[aegis] no pre-built binary for {} — build from source with:",
+            "[goblin] no pre-built binary for {} — build from source with:",
             update::current_target()
         );
         eprintln!("  cargo install --git https://github.com/nakata-app/metis");
         return Ok(());
     }
 
-    eprintln!("[aegis] downloading v{}...", check.latest);
+    eprintln!("[goblin] downloading v{}...", check.latest);
     let path = update::perform_update(&client, &check)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    eprintln!("[aegis] updated to v{} ({})", check.latest, path.display());
+    eprintln!("[goblin] updated to v{} ({})", check.latest, path.display());
     Ok(())
 }
 

@@ -53,7 +53,7 @@ pub(super) fn build_agent<'a>(
         None => {
             let id = SessionStore::new_id();
             let s = SessionStore::open(workspace, &id).context("could not open REPL session")?;
-            eprintln!("\x1b[1;32m[aegis] repl session={id}\x1b[0m");
+            eprintln!("\x1b[1;32m[goblin] repl session={id}\x1b[0m");
             s
         }
     };

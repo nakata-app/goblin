@@ -125,7 +125,7 @@ pub fn run(workspace: &Path) -> Result<()> {
             provider.env_var
         );
     }
-    eprintln!("Run \x1b[1maegis\x1b[0m to start the REPL.");
+    eprintln!("Run goblin to start the REPL.");
     Ok(())
 }
 

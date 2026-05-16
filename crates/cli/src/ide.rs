@@ -54,8 +54,8 @@ pub async fn run_ide_server(
         .await
         .with_context(|| format!("could not bind IDE bridge to port {port}"))?;
 
-    eprintln!("[aegis] IDE bridge listening on 127.0.0.1:{port}");
-    eprintln!("[aegis] Connect your IDE extension to this address");
+    eprintln!("[goblin] IDE bridge listening on 127.0.0.1:{port}");
+    eprintln!("[goblin] Connect your IDE extension to this address");
 
     let workspace = workspace.to_path_buf();
     let model = model.to_string();
@@ -63,7 +63,7 @@ pub async fn run_ide_server(
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                eprintln!("[aegis] IDE client connected from {addr}");
+                eprintln!("[goblin] IDE client connected from {addr}");
                 let client = Arc::clone(&client);
                 let registry = Arc::clone(&registry);
                 let ws = workspace.clone();
@@ -74,13 +74,13 @@ pub async fn run_ide_server(
                     if let Err(e) =
                         handle_connection(stream, client, registry, &ws, cfg, perm, &mdl).await
                     {
-                        eprintln!("[aegis] IDE connection error: {e}");
+                        eprintln!("[goblin] IDE connection error: {e}");
                     }
-                    eprintln!("[aegis] IDE client disconnected");
+                    eprintln!("[goblin] IDE client disconnected");
                 });
             }
             Err(e) => {
-                eprintln!("[aegis] IDE accept error: {e}");
+                eprintln!("[goblin] IDE accept error: {e}");
             }
         }
     }

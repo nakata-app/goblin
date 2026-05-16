@@ -1,4 +1,4 @@
-//! Interactive REPL mode for `aegis`.
+//! Interactive REPL mode for `goblin`.
 //!
 //! Drops into a `aegis> ` prompt, runs each line of input through the
 //! agent loop, and prints the model's reply. Multi-turn conversation is
@@ -80,13 +80,13 @@ fn attach_image_path_repl(path: &Path, pending: &mut Vec<PathBuf>) {
             pending.push(p);
         }
         ImagePrep::NotFound(p) => {
-            eprintln!("[aegis] file not found: {}", p.display());
+            eprintln!("[goblin] file not found: {}", p.display());
         }
         ImagePrep::Unsupported(ext) => {
-            eprintln!("[aegis] unsupported image format: .{ext} (use png/jpg/heic/gif/webp/bmp)");
+            eprintln!("[goblin] unsupported image format: .{ext} (use png/jpg/heic/gif/webp/bmp)");
         }
         ImagePrep::ConversionFailed(e) => {
-            eprintln!("[aegis] HEIC conversion failed: {e} (install `sips` or pre-convert)");
+            eprintln!("[goblin] HEIC conversion failed: {e} (install `sips` or pre-convert)");
         }
     }
 }
@@ -124,7 +124,7 @@ fn recovery_hint_for_error(err: &aegis_core::AgentError) -> &'static str {
         }
         aegis_core::AgentError::MaxTurns(_) => {
             "agent hit the per-run turn cap. Send a follow-up to continue, or raise \
-             max_turns in metis.toml."
+             max_turns in goblin.toml."
         }
         aegis_core::AgentError::Api(_) => {
             "provider call failed after retry. Check API key / network, or /model to \
@@ -143,9 +143,9 @@ fn recovery_hint_for_error(err: &aegis_core::AgentError) -> &'static str {
         aegis_core::AgentError::Session(_) => {
             "session store error — check disk space and `.metis/sessions/` permissions."
         }
-        aegis_core::AgentError::Config(_) => "config error — fix metis.toml and restart.",
+        aegis_core::AgentError::Config(_) => "config error — fix goblin.toml and restart.",
         aegis_core::AgentError::BudgetExceeded { .. } => {
-            "cost budget exceeded — raise the limit in metis.toml or pass --budget."
+            "cost budget exceeded — raise the limit in goblin.toml or pass --budget."
         }
     }
 }
@@ -160,7 +160,7 @@ fn budget_hard_stop_prompt(spent: f64, limit: f64) -> BudgetHardStopChoice {
     eprintln!("\x1b[1;33m╰────────────────────────────────────────╯\x1b[0m");
     if !io::stdin().is_terminal() {
         eprintln!(
-            "\x1b[1;33m[aegis]\x1b[0m non-TTY session — treating as [n] stop \
+            "\x1b[1;33m[goblin]\x1b[0m non-TTY session — treating as [n] stop \
              (set budget_hard_stop = false to override in scripts)."
         );
         return BudgetHardStopChoice::Stop;
@@ -253,7 +253,7 @@ pub async fn run_repl(
     let is_resumed = initial_session.is_some();
     if let Some(s) = &initial_session {
         eprintln!(
-            "[aegis] resumed session={} ({} prior messages)",
+            "[goblin] resumed session={} ({} prior messages)",
             s.id(),
             s.messages().len()
         );
@@ -291,7 +291,7 @@ pub async fn run_repl(
         skill_registry.register(skill);
     }
 
-    eprintln!("\x1b[1;32m[aegis] model: {model} | type /help for commands, /exit to leave\x1b[0m");
+    eprintln!("\x1b[1;32m[goblin] model: {model} | type /help for commands, /exit to leave\x1b[0m");
 
     // Budget banner: only surfaces when a daily_budget_usd is set so the
     // no-config path stays silent. Uses prior-session telemetry; the
@@ -303,7 +303,7 @@ pub async fn run_repl(
             budget_usd: Some(budget),
         };
         let marker = if status.over_budget() { "!" } else { "·" };
-        eprintln!("\x1b[2m[aegis] {marker} {}\x1b[0m", status.summary());
+        eprintln!("\x1b[2m[goblin] {marker} {}\x1b[0m", status.summary());
     }
 
     let mut last_cron_check = std::time::Instant::now();
@@ -420,7 +420,7 @@ pub async fn run_repl(
                     break;
                 }
                 Err(err) => {
-                    eprintln!("[aegis] readline error: {err}");
+                    eprintln!("[goblin] readline error: {err}");
                     break;
                 }
             }
@@ -448,9 +448,9 @@ pub async fn run_repl(
                     .status();
                 match status {
                     Ok(s) if !s.success() => {
-                        eprintln!("[aegis] command exited with {}", s.code().unwrap_or(-1));
+                        eprintln!("[goblin] command exited with {}", s.code().unwrap_or(-1));
                     }
-                    Err(e) => eprintln!("[aegis] could not run command: {e}"),
+                    Err(e) => eprintln!("[goblin] could not run command: {e}"),
                     _ => {}
                 }
                 continue;
@@ -464,12 +464,12 @@ pub async fn run_repl(
             }
             ReplCommand::CostOff => {
                 cost_footer_enabled = false;
-                eprintln!("\x1b[2m[aegis] cost footer off\x1b[0m");
+                eprintln!("\x1b[2m[goblin] cost footer off\x1b[0m");
                 continue;
             }
             ReplCommand::CostOn => {
                 cost_footer_enabled = true;
-                eprintln!("\x1b[2m[aegis] cost footer on\x1b[0m");
+                eprintln!("\x1b[2m[goblin] cost footer on\x1b[0m");
                 continue;
             }
             ReplCommand::Providers => {
@@ -502,9 +502,9 @@ pub async fn run_repl(
             }
             ReplCommand::Images => {
                 if pending_images.is_empty() {
-                    eprintln!("[aegis] no images attached. Use /image <path> to attach one.");
+                    eprintln!("[goblin] no images attached. Use /image <path> to attach one.");
                 } else {
-                    eprintln!("[aegis] attached images:");
+                    eprintln!("[goblin] attached images:");
                     for (i, p) in pending_images.iter().enumerate() {
                         eprintln!("  {}. {}", i + 1, p.display());
                     }
@@ -515,13 +515,13 @@ pub async fn run_repl(
             ReplCommand::ImagesClear => {
                 let n = pending_images.len();
                 pending_images.clear();
-                eprintln!("[aegis] cleared {n} attached image(s).");
+                eprintln!("[goblin] cleared {n} attached image(s).");
                 continue;
             }
             ReplCommand::Paste => {
                 match crate::path_input::paste_image_from_clipboard() {
                     Ok(p) => attach_image_path_repl(&p, &mut pending_images),
-                    Err(e) => eprintln!("[aegis] /paste failed: {e}"),
+                    Err(e) => eprintln!("[goblin] /paste failed: {e}"),
                 }
                 continue;
             }
@@ -532,14 +532,14 @@ pub async fn run_repl(
                     .map(|p| workspace.join(p))
                     .unwrap_or_else(|| workspace.to_path_buf());
                 if !target_path.exists() {
-                    eprintln!("[aegis] path not found: {}", target_path.display());
+                    eprintln!("[goblin] path not found: {}", target_path.display());
                     continue;
                 }
 
                 // Check if it's a file or directory
                 if target_path.is_file() {
                     eprintln!(
-                        "[aegis] {} is a file, not a directory",
+                        "[goblin] {} is a file, not a directory",
                         target_path.display()
                     );
                     eprintln!(
@@ -549,7 +549,7 @@ pub async fn run_repl(
                     continue;
                 }
 
-                eprintln!("[aegis] browsing files at: {}", target_path.display());
+                eprintln!("[goblin] browsing files at: {}", target_path.display());
 
                 // Get directory info
                 let mut dirs: Vec<(String, u64, std::time::SystemTime)> = Vec::new();
@@ -618,7 +618,7 @@ pub async fn run_repl(
                     }
 
                     eprintln!(
-                        "\n[aegis] total: {} directories, {} files, {} total size",
+                        "\n[goblin] total: {} directories, {} files, {} total size",
                         dirs.len(),
                         files.len(),
                         format_size(total_size)
@@ -633,7 +633,7 @@ pub async fn run_repl(
                         eprintln!("  (relative to workspace: {})", rel_path);
                     }
                 } else {
-                    eprintln!("[aegis] cannot read directory: {}", target_path.display());
+                    eprintln!("[goblin] cannot read directory: {}", target_path.display());
                 }
                 continue;
             }
@@ -641,11 +641,11 @@ pub async fn run_repl(
                 let _ = editor.add_history_entry(&line);
                 let path = workspace.join(path_str);
                 if !path.exists() {
-                    eprintln!("[aegis] file not found: {}", path.display());
+                    eprintln!("[goblin] file not found: {}", path.display());
                     continue;
                 }
                 if path.is_dir() {
-                    eprintln!("[aegis] cannot view directory: {}", path.display());
+                    eprintln!("[goblin] cannot view directory: {}", path.display());
                     continue;
                 }
 
@@ -658,7 +658,7 @@ pub async fn run_repl(
                             .unwrap_or_else(|_| std::time::SystemTime::now());
                         let modified_str = format_time_ago(modified);
 
-                        eprintln!("[aegis] previewing: {}", path.display());
+                        eprintln!("[goblin] previewing: {}", path.display());
                         eprintln!("  size: {}, modified: {}", format_size(size), modified_str);
 
                         // Determine file type for highlighting
@@ -692,7 +692,7 @@ pub async fn run_repl(
                         };
 
                         if !is_text_file {
-                            eprintln!("[aegis] binary file detected (not displaying content)");
+                            eprintln!("[goblin] binary file detected (not displaying content)");
                             eprintln!("  use /files to browse, or !cat with appropriate flags");
                             continue;
                         }
@@ -704,12 +704,12 @@ pub async fn run_repl(
 
                                 if lines.len() > max_lines {
                                     eprintln!(
-                                        "[aegis] showing first {} of {} lines:",
+                                        "[goblin] showing first {} of {} lines:",
                                         max_lines,
                                         lines.len()
                                     );
                                 } else {
-                                    eprintln!("[aegis] showing all {} lines:", lines.len());
+                                    eprintln!("[goblin] showing all {} lines:", lines.len());
                                 }
 
                                 // Basic syntax highlighting based on file extension
@@ -740,12 +740,12 @@ pub async fn run_repl(
                                     lines.len(), non_empty_lines, longest_line);
                             }
                             Err(e) => {
-                                eprintln!("[aegis] could not read file: {e}");
+                                eprintln!("[goblin] could not read file: {e}");
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("[aegis] could not get file info: {e}");
+                        eprintln!("[goblin] could not get file info: {e}");
                     }
                 }
                 continue;
@@ -757,7 +757,7 @@ pub async fn run_repl(
                 let (pattern, case_sensitive, use_regex, max_results, file_types) =
                     parse_search_options(pattern);
 
-                eprintln!("[aegis] searching for pattern: \"{}\"", pattern);
+                eprintln!("[goblin] searching for pattern: \"{}\"", pattern);
                 if use_regex {
                     eprintln!("  mode: regex");
                 } else {
@@ -785,7 +785,7 @@ pub async fn run_repl(
 
                 if results.is_empty() {
                     eprintln!(
-                        "[aegis] no matches found in {} files ({:.2}s)",
+                        "[goblin] no matches found in {} files ({:.2}s)",
                         files_searched,
                         elapsed.as_secs_f32()
                     );
@@ -793,7 +793,7 @@ pub async fn run_repl(
                 }
 
                 eprintln!(
-                    "[aegis] found {} matches in {} files ({:.2}s)",
+                    "[goblin] found {} matches in {} files ({:.2}s)",
                     results.len(),
                     files_searched,
                     elapsed.as_secs_f32()
@@ -854,59 +854,59 @@ pub async fn run_repl(
                 continue;
             }
             ReplCommand::MultiModelToggle => {
-                eprintln!("[aegis] multi-model evaluation: use CLI flag --multi-model-evaluation");
+                eprintln!("[goblin] multi-model evaluation: use CLI flag --multi-model-evaluation");
                 continue;
             }
             ReplCommand::PerturbationToggle => {
-                eprintln!("[aegis] prompt perturbation: use CLI flag --prompt-perturbation");
+                eprintln!("[goblin] prompt perturbation: use CLI flag --prompt-perturbation");
                 continue;
             }
             ReplCommand::ParallelToggle => {
-                eprintln!("[aegis] parallel models: use CLI flag --parallel-models");
+                eprintln!("[goblin] parallel models: use CLI flag --parallel-models");
                 continue;
             }
             ReplCommand::ApiKeysToggle => {
-                eprintln!("[aegis] API key management: use CLI flag --api-keys");
+                eprintln!("[goblin] API key management: use CLI flag --api-keys");
                 continue;
             }
             ReplCommand::GodmodeToggle => {
-                eprintln!("[aegis] GODMODE features: use CLI flags --multi-model-evaluation --prompt-perturbation --parallel-models --api-keys");
+                eprintln!("[goblin] GODMODE features: use CLI flags --multi-model-evaluation --prompt-perturbation --parallel-models --api-keys");
                 continue;
             }
             ReplCommand::Browser => {
                 let spec = "npx -y @playwright/mcp@latest";
-                eprintln!("\x1b[2m[aegis] attaching Playwright MCP...\x1b[0m");
+                eprintln!("\x1b[2m[goblin] attaching Playwright MCP...\x1b[0m");
                 match spawn_mcp_server(spec, &[]).await {
                     Ok(handle) => {
                         let n = handle.register_into_shared(&registry);
-                        eprintln!("\x1b[1;32m[aegis] Playwright MCP attached, {n} tools\x1b[0m");
+                        eprintln!("\x1b[1;32m[goblin] Playwright MCP attached, {n} tools\x1b[0m");
                     }
-                    Err(e) => eprintln!("[aegis] failed to attach Playwright: {e}"),
+                    Err(e) => eprintln!("[goblin] failed to attach Playwright: {e}"),
                 }
                 continue;
             }
             ReplCommand::Computer => {
                 let bin = "/Users/macmini/.nvm/versions/node/v20.20.1/bin/open-computer-use";
-                eprintln!("\x1b[2m[aegis] attaching open-computer-use MCP...\x1b[0m");
+                eprintln!("\x1b[2m[goblin] attaching open-computer-use MCP...\x1b[0m");
                 match spawn_mcp_server(bin, &["mcp".to_string()]).await {
                     Ok(handle) => {
                         let n = handle.register_into_shared(&registry);
-                        eprintln!("\x1b[1;32m[aegis] open-computer-use MCP attached, {n} tools\x1b[0m");
+                        eprintln!("\x1b[1;32m[goblin] open-computer-use MCP attached, {n} tools\x1b[0m");
                     }
-                    Err(e) => eprintln!("[aegis] failed to attach open-computer-use: {e}"),
+                    Err(e) => eprintln!("[goblin] failed to attach open-computer-use: {e}"),
                 }
                 continue;
             }
             ReplCommand::Context => {
-                eprintln!("[aegis] /context — not yet implemented");
+                eprintln!("[goblin] /context — not yet implemented");
                 continue;
             }
             ReplCommand::Tokens => {
-                eprintln!("[aegis] /tokens — not yet implemented");
+                eprintln!("[goblin] /tokens — not yet implemented");
                 continue;
             }
             ReplCommand::History => {
-                eprintln!("[aegis] /history — not yet implemented");
+                eprintln!("[goblin] /history — not yet implemented");
                 continue;
             }
             ReplCommand::Copy => {
@@ -924,13 +924,13 @@ pub async fn run_repl(
                             } else {
                                 text.clone()
                             };
-                            eprintln!("[aegis] copied to clipboard: {preview}");
+                            eprintln!("[goblin] copied to clipboard: {preview}");
                         } else {
-                            eprintln!("[aegis] copy failed — terminal may not support OSC 52");
+                            eprintln!("[goblin] copy failed — terminal may not support OSC 52");
                         }
                     }
-                    Some(_) => eprintln!("[aegis] last assistant message has no text content"),
-                    None => eprintln!("[aegis] no assistant message in transcript yet"),
+                    Some(_) => eprintln!("[goblin] last assistant message has no text content"),
+                    None => eprintln!("[goblin] no assistant message in transcript yet"),
                 }
                 continue;
             }
@@ -948,7 +948,7 @@ pub async fn run_repl(
                             .trim();
                         let expanded = aegis_core::expand_prompt(skill, args);
                         eprintln!(
-                            "[aegis] skill \x1b[38;2;122;240;227m/{name}\x1b[0m → {}",
+                            "[goblin] skill \x1b[38;2;122;240;227m/{name}\x1b[0m → {}",
                             if expanded.len() > 60 {
                                 format!("{}…", &expanded[..57])
                             } else {
@@ -977,7 +977,7 @@ pub async fn run_repl(
                                     let queued = drain_pending_lines();
                                     if !queued.is_empty() {
                                         eprintln!(
-                                            "\x1b[2m[aegis] {} input{} queued from typing during run\x1b[0m",
+                                            "\x1b[2m[goblin] {} input{} queued from typing during run\x1b[0m",
                                             queued.len(),
                                             if queued.len() == 1 { "" } else { "s" }
                                         );
@@ -1011,14 +1011,14 @@ pub async fn run_repl(
                                     let queued = drain_pending_lines();
                                     if !queued.is_empty() {
                                         eprintln!(
-                                            "\x1b[2m[aegis] {} input{} queued from typing during run\x1b[0m",
+                                            "\x1b[2m[goblin] {} input{} queued from typing during run\x1b[0m",
                                             queued.len(),
                                             if queued.len() == 1 { "" } else { "s" }
                                         );
                                         pending_inputs.extend(queued);
                                     }
                                 }
-                                eprintln!("\n[aegis] error: {e}");
+                                eprintln!("\n[goblin] error: {e}");
                             }
                         }
                         continue;
@@ -1027,7 +1027,7 @@ pub async fn run_repl(
                 let hint = crate::tui::suggest_slash_command(name)
                     .map(|s| format!(" (did you mean /{s}?)"))
                     .unwrap_or_default();
-                eprintln!("[aegis] unknown command `/{name}`{hint} — try /help");
+                eprintln!("[goblin] unknown command `/{name}`{hint} — try /help");
                 continue;
             }
             ReplCommand::Clear => {
@@ -1053,7 +1053,7 @@ pub async fn run_repl(
                 )?;
                 total = UsageSnapshot::default();
                 turn_count = 0;
-                eprintln!("[aegis] conversation cleared");
+                eprintln!("[goblin] conversation cleared");
                 continue;
             }
             ReplCommand::ProviderSwitch(ref name) => {
@@ -1109,7 +1109,7 @@ pub async fn run_repl(
                                 };
                                 if can_route {
                                     routing = original_routing.clone();
-                                    eprintln!("[aegis] auto-routing restored");
+                                    eprintln!("[goblin] auto-routing restored");
                                 } else {
                                     routing = crate::router::RoutingConfig::default();
                                 }
@@ -1121,10 +1121,10 @@ pub async fn run_repl(
                                 }
                                 total = UsageSnapshot::default();
                                 turn_count = 0;
-                                eprintln!("[aegis] switched to {name} (model: {new_model})");
+                                eprintln!("[goblin] switched to {name} (model: {new_model})");
                             }
                             Err(e) => {
-                                eprintln!("[aegis] failed to init {name}: {e}");
+                                eprintln!("[goblin] failed to init {name}: {e}");
                                 eprintln!("  set {} first", provider_info.env_var);
                             }
                         }
@@ -1133,7 +1133,7 @@ pub async fn run_repl(
                         let names: Vec<&str> =
                             aegis_api::Provider::BUILTINS.iter().map(|p| p.id).collect();
                         eprintln!(
-                            "[aegis] unknown provider `{name}` — available: {}",
+                            "[goblin] unknown provider `{name}` — available: {}",
                             names.join(", ")
                         );
                     }
@@ -1145,7 +1145,7 @@ pub async fn run_repl(
                 ref value,
             } => {
                 std::env::set_var(env_var, value);
-                eprintln!("[aegis] {} set (session only)", env_var);
+                eprintln!("[goblin] {} set (session only)", env_var);
                 eprintln!("  to persist, add to ~/.metis/config.toml:");
                 eprintln!("  [api_keys]");
                 eprintln!("  {} = \"{}...\"", env_var, &value[..value.len().min(8)]);
@@ -1199,11 +1199,11 @@ pub async fn run_repl(
                 };
 
                 if models.is_empty() {
-                    eprintln!("[aegis] no models available for this provider");
+                    eprintln!("[goblin] no models available for this provider");
                     continue;
                 }
 
-                eprintln!("[aegis] {} models:", provider);
+                eprintln!("[goblin] {} models:", provider);
                 for (i, (_, name)) in models.iter().enumerate() {
                     eprintln!("  {}. {}", i + 1, name);
                 }
@@ -1281,7 +1281,7 @@ pub async fn run_repl(
                         )?;
                         routing = crate::router::RoutingConfig::default();
                         config = new_config;
-                        eprintln!("[aegis] model: {old} → {selected_model}");
+                        eprintln!("[goblin] model: {old} → {selected_model}");
                     }
                 }
                 continue;
@@ -1341,16 +1341,16 @@ pub async fn run_repl(
                                 let _ = agent.append_note(&format!(
                                     "Model switched from `{old}` to `{pname}:{bare_model}`."
                                 ));
-                                eprintln!("[aegis] model: {old} → {pname}:{bare_model}");
+                                eprintln!("[goblin] model: {old} → {pname}:{bare_model}");
                                 continue;
                             }
                             Err(e) => {
-                                eprintln!("[aegis] can't switch to provider `{pname}`: {e}");
+                                eprintln!("[goblin] can't switch to provider `{pname}`: {e}");
                                 continue;
                             }
                         },
                         None => {
-                            eprintln!("[aegis] unknown provider `{pname}`");
+                            eprintln!("[goblin] unknown provider `{pname}`");
                             continue;
                         }
                     }
@@ -1385,7 +1385,7 @@ pub async fn run_repl(
 
                 let _ =
                     agent.append_note(&format!("Model switched from `{old}` to `{bare_model}`."));
-                eprintln!("[aegis] model: {old} → {bare_model}");
+                eprintln!("[goblin] model: {old} → {bare_model}");
                 continue;
             }
             ReplCommand::Swarm {
@@ -1398,7 +1398,7 @@ pub async fn run_repl(
                 } else {
                     String::new()
                 };
-                eprintln!("[aegis] swarm: {n} parallel agents{quorum_label}");
+                eprintln!("[goblin] swarm: {n} parallel agents{quorum_label}");
 
                 let angles = [
                     "Performance",
@@ -1454,10 +1454,10 @@ pub async fn run_repl(
                         total.cache_read_tokens += output.usage.cache_read_tokens;
                         total.cache_write_tokens += output.usage.cache_write_tokens;
                         turn_count += output.turns;
-                        eprintln!("[aegis] swarm complete");
+                        eprintln!("[goblin] swarm complete");
                     }
                     Err(e) => {
-                        eprintln!("[aegis] swarm failed: {e}");
+                        eprintln!("[goblin] swarm failed: {e}");
                     }
                 }
                 continue;
@@ -1510,12 +1510,12 @@ pub async fn run_repl(
                             }
                         }
                         Err(e) => {
-                            eprintln!("[aegis] /glm: can't init {provider}: {e}");
+                            eprintln!("[goblin] /glm: can't init {provider}: {e}");
                             eprintln!("  hint: set {} in config or env", prov_info.env_var);
                         }
                     },
                     None => {
-                        eprintln!("[aegis] /glm: unknown provider '{provider}'");
+                        eprintln!("[goblin] /glm: unknown provider '{provider}'");
                         eprintln!(
                             "  available: {}",
                             aegis_api::Provider::BUILTINS
@@ -1678,7 +1678,7 @@ pub async fn run_repl(
                 let parent = match agent.session() {
                     Some(s) => s,
                     None => {
-                        eprintln!("[aegis] nothing to fork — no session is attached");
+                        eprintln!("[goblin] nothing to fork — no session is attached");
                         continue;
                     }
                 };
@@ -1686,7 +1686,7 @@ pub async fn run_repl(
                 let forked = match parent.fork(&new_id, take) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[aegis] fork failed: {e}");
+                        eprintln!("[goblin] fork failed: {e}");
                         continue;
                     }
                 };
@@ -1709,7 +1709,7 @@ pub async fn run_repl(
                     #[cfg(feature = "ctx")]
                     blob_handles.clone(),
                 )?;
-                eprintln!("[aegis] forked → session={new_id} ({kept} messages carried over)");
+                eprintln!("[goblin] forked → session={new_id} ({kept} messages carried over)");
                 continue;
             }
             ReplCommand::Resume(id) => {
@@ -1722,7 +1722,7 @@ pub async fn run_repl(
                 let store = match SessionStore::open(workspace, &id) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("[aegis] could not open session `{id}`: {e}");
+                        eprintln!("[goblin] could not open session `{id}`: {e}");
                         continue;
                     }
                 };
@@ -1745,34 +1745,34 @@ pub async fn run_repl(
                     #[cfg(feature = "ctx")]
                     blob_handles.clone(),
                 )?;
-                eprintln!("[aegis] resumed session={id} ({carried} messages)");
+                eprintln!("[goblin] resumed session={id} ({carried} messages)");
                 continue;
             }
             ReplCommand::Sessions => {
                 match SessionStore::list(workspace) {
                     Ok(list) if list.is_empty() => {
-                        eprintln!("[aegis] no sessions under {}", workspace.display());
+                        eprintln!("[goblin] no sessions under {}", workspace.display());
                     }
                     Ok(list) => {
-                        eprintln!("[aegis] sessions ({} total, newest first):", list.len());
+                        eprintln!("[goblin] sessions ({} total, newest first):", list.len());
                         for s in list {
                             eprintln!("  {}  ({} msgs)", s.id, s.message_count);
                         }
                     }
-                    Err(e) => eprintln!("[aegis] could not list sessions: {e}"),
+                    Err(e) => eprintln!("[goblin] could not list sessions: {e}"),
                 }
                 continue;
             }
             ReplCommand::Tree => {
                 match SessionStore::list(workspace) {
                     Ok(list) if list.is_empty() => {
-                        eprintln!("[aegis] no sessions");
+                        eprintln!("[goblin] no sessions");
                     }
                     Ok(list) => {
                         let current_id = agent.session().map(|s| s.id().to_string());
                         eprintln!("{}", format_session_tree(&list, current_id.as_deref()));
                     }
-                    Err(e) => eprintln!("[aegis] could not list sessions: {e}"),
+                    Err(e) => eprintln!("[goblin] could not list sessions: {e}"),
                 }
                 continue;
             }
@@ -1780,7 +1780,7 @@ pub async fn run_repl(
                 match agent.session() {
                     Some(s) => {
                         let meta = s.meta();
-                        eprintln!("[aegis] session: {}", s.id());
+                        eprintln!("[goblin] session: {}", s.id());
                         eprintln!("  messages: {}", s.messages().len());
                         if let Some(pid) = &meta.parent_id {
                             eprintln!("  parent: {pid}");
@@ -1802,7 +1802,7 @@ pub async fn run_repl(
                             }
                         }
                     }
-                    None => eprintln!("[aegis] no session attached"),
+                    None => eprintln!("[goblin] no session attached"),
                 }
                 continue;
             }
@@ -1810,47 +1810,47 @@ pub async fn run_repl(
                 if let Some(path) = aegis_core::telemetry::telemetry_path() {
                     let records = aegis_core::telemetry::load_records(&path);
                     if records.is_empty() {
-                        eprintln!("[aegis] no telemetry data yet");
+                        eprintln!("[goblin] no telemetry data yet");
                     } else {
                         let stats = aegis_core::telemetry::UsageStats::from_records(&records);
                         eprint!("{}", stats.format_dashboard());
                     }
                 } else {
-                    eprintln!("[aegis] could not determine telemetry path");
+                    eprintln!("[goblin] could not determine telemetry path");
                 }
                 continue;
             }
             ReplCommand::Update => {
                 use aegis_core::update;
-                eprintln!("[aegis] current: v{}", update::CURRENT_VERSION);
-                eprintln!("[aegis] checking...");
+                eprintln!("[goblin] current: v{}", update::CURRENT_VERSION);
+                eprintln!("[goblin] checking...");
                 let http = reqwest::Client::new();
                 match update::check_latest(&http).await {
                     Ok(check) if !check.is_newer => {
-                        eprintln!("[aegis] already up to date");
+                        eprintln!("[goblin] already up to date");
                     }
                     Ok(check) => {
-                        eprintln!("[aegis] v{} → v{} available", check.current, check.latest);
+                        eprintln!("[goblin] v{} → v{} available", check.current, check.latest);
                         if check.download_url.is_some() {
-                            eprintln!("[aegis] downloading...");
+                            eprintln!("[goblin] downloading...");
                             match update::perform_update(&http, &check).await {
                                 Ok(path) => {
                                     eprintln!(
-                                        "[aegis] updated to v{} — restart to use new version",
+                                        "[goblin] updated to v{} — restart to use new version",
                                         check.latest
                                     );
                                     let _ = path;
                                 }
-                                Err(e) => eprintln!("[aegis] update failed: {e}"),
+                                Err(e) => eprintln!("[goblin] update failed: {e}"),
                             }
                         } else {
                             eprintln!(
-                                "[aegis] no binary for {} — build from source",
+                                "[goblin] no binary for {} — build from source",
                                 update::current_target()
                             );
                         }
                     }
-                    Err(e) => eprintln!("[aegis] update check failed: {e}"),
+                    Err(e) => eprintln!("[goblin] update check failed: {e}"),
                 }
                 continue;
             }
@@ -1880,7 +1880,7 @@ pub async fn run_repl(
                 )?;
                 let state = if thinking_enabled { "ON" } else { "OFF" };
                 eprintln!(
-                    "[aegis] overthink {state} (budget={})",
+                    "[goblin] overthink {state} (budget={})",
                     config.thinking_budget
                 );
                 continue;
@@ -1896,7 +1896,7 @@ pub async fn run_repl(
                 let map = aegis_core::repomap::build_repo_map(workspace, max_files);
                 if map.is_empty() {
                     eprintln!(
-                        "[aegis] /map: no source files found in {}",
+                        "[goblin] /map: no source files found in {}",
                         workspace.display()
                     );
                 } else {
@@ -1912,10 +1912,10 @@ pub async fn run_repl(
                     budget_usd: daily_budget_usd,
                 };
                 let marker = if status.over_budget() { "!" } else { "·" };
-                eprintln!("[aegis] {marker} {}", status.summary());
+                eprintln!("[goblin] {marker} {}", status.summary());
                 if daily_budget_usd.is_none() {
                     eprintln!(
-                        "\x1b[2m[aegis]   (set daily_budget_usd in .metis/config.toml to enable the ceiling)\x1b[0m"
+                        "\x1b[2m[goblin]   (set daily_budget_usd in .metis/config.toml to enable the ceiling)\x1b[0m"
                     );
                 }
                 continue;
@@ -1923,17 +1923,17 @@ pub async fn run_repl(
             ReplCommand::Compact => {
                 let removed = agent.force_compact();
                 if removed > 0 {
-                    eprintln!("[aegis] compacted: {removed} messages removed");
+                    eprintln!("[goblin] compacted: {removed} messages removed");
                 } else {
-                    eprintln!("[aegis] nothing to compact (transcript too short)");
+                    eprintln!("[goblin] nothing to compact (transcript too short)");
                 }
                 continue;
             }
             ReplCommand::Insights => {
-                eprintln!("[aegis] extracting insights from session...");
+                eprintln!("[goblin] extracting insights from session...");
                 let messages = agent.session_messages();
                 if messages.is_empty() {
-                    eprintln!("[aegis] no session messages to extract insights from");
+                    eprintln!("[goblin] no session messages to extract insights from");
                     continue;
                 }
                 // Build a flat text of conversation for the LLM
@@ -1955,7 +1955,7 @@ pub async fn run_repl(
                     }
                 }
                 if conv.is_empty() {
-                    eprintln!("[aegis] no extractable content in session");
+                    eprintln!("[goblin] no extractable content in session");
                     continue;
                 }
                 let insight_prompt = format!(
@@ -2004,13 +2004,13 @@ pub async fn run_repl(
                         last_cost_shown = std::time::Instant::now();
                     }
                 } else if let Some(Err(e)) = run_result_insights {
-                    eprintln!("[aegis] insights error: {e}");
+                    eprintln!("[goblin] insights error: {e}");
                 }
                 continue;
             }
             ReplCommand::Learn(ref text) => {
                 if text.trim().is_empty() {
-                    eprintln!("[aegis] usage: /learn <rule or insight text>");
+                    eprintln!("[goblin] usage: /learn <rule or insight text>");
                     continue;
                 }
                 let workspace = std::env::current_dir().unwrap_or_default();
@@ -2027,8 +2027,8 @@ pub async fn run_repl(
                     tags: vec!["manual".to_string()],
                 };
                 match aegis_core::learning::upsert_insight(&insight) {
-                    Ok(()) => eprintln!("[aegis] saved: {text}"),
-                    Err(e) => eprintln!("[aegis] failed to save insight: {e}"),
+                    Ok(()) => eprintln!("[goblin] saved: {text}"),
+                    Err(e) => eprintln!("[goblin] failed to save insight: {e}"),
                 }
                 continue;
             }
@@ -2094,10 +2094,10 @@ pub async fn run_repl(
                         .join("\n"),
                 ) {
                     Ok(_) => eprintln!(
-                        "[aegis] exported {} training examples → {path}",
+                        "[goblin] exported {} training examples → {path}",
                         examples.len()
                     ),
-                    Err(e) => eprintln!("[aegis] export-ft error: {e}"),
+                    Err(e) => eprintln!("[goblin] export-ft error: {e}"),
                 }
                 continue;
             }
@@ -2162,15 +2162,15 @@ pub async fn run_repl(
                 match *state {
                     aegis_core::PlanState::Normal => {
                         *state = aegis_core::PlanState::Drafting;
-                        eprintln!("[aegis] plan mode ON (drafting — read-only tools only)");
+                        eprintln!("[goblin] plan mode ON (drafting — read-only tools only)");
                     }
                     aegis_core::PlanState::Drafting => {
                         *state = aegis_core::PlanState::Normal;
-                        eprintln!("[aegis] plan mode OFF");
+                        eprintln!("[goblin] plan mode OFF");
                     }
                     aegis_core::PlanState::Executing => {
                         *state = aegis_core::PlanState::Normal;
-                        eprintln!("[aegis] plan execution cancelled, back to normal");
+                        eprintln!("[goblin] plan execution cancelled, back to normal");
                     }
                 }
                 continue;
@@ -2229,21 +2229,21 @@ pub async fn run_repl(
                 match skill_registry.install(&source) {
                     Ok(names) => {
                         eprintln!(
-                            "[aegis] installed {} skill(s): {}",
+                            "[goblin] installed {} skill(s): {}",
                             names.len(),
                             names.join(", ")
                         );
                     }
                     Err(e) => {
-                        eprintln!("[aegis] skill install failed: {e}");
+                        eprintln!("[goblin] skill install failed: {e}");
                     }
                 }
                 continue;
             }
             ReplCommand::SkillUninstall(name) => {
                 match skill_registry.uninstall(&name) {
-                    Ok(()) => eprintln!("[aegis] uninstalled skill `{name}`"),
-                    Err(e) => eprintln!("[aegis] {e}"),
+                    Ok(()) => eprintln!("[goblin] uninstalled skill `{name}`"),
+                    Err(e) => eprintln!("[goblin] {e}"),
                 }
                 continue;
             }
@@ -2297,7 +2297,7 @@ pub async fn run_repl(
                 } else {
                     "\x1b[37mbad\x1b[0m"
                 };
-                eprintln!("[aegis] skill \x1b[93m{name}\x1b[0m rated {label}");
+                eprintln!("[goblin] skill \x1b[93m{name}\x1b[0m rated {label}");
                 let stats = aegis_core::skills::load_skill_stats(&name);
                 if stats.needs_improvement() {
                     eprintln!(
@@ -2311,7 +2311,7 @@ pub async fn run_repl(
             ReplCommand::LearnSkill(suggested_name) => {
                 let messages = agent.session_messages();
                 if messages.is_empty() {
-                    eprintln!("[aegis] no session content to extract a skill from");
+                    eprintln!("[goblin] no session content to extract a skill from");
                     continue;
                 }
                 let mut conv = String::new();
@@ -2354,7 +2354,7 @@ pub async fn run_repl(
                 spinner.begin_turn();
                 let learn_result = tokio::select! {
                     r = agent.run(aegis_core::UserInput::Text(extract_prompt)) => Some(r),
-                    _ = tokio::signal::ctrl_c() => { eprintln!("\n[aegis] interrupted"); None }
+                    _ = tokio::signal::ctrl_c() => { eprintln!("\n[goblin] interrupted"); None }
                 };
                 spinner.end_turn();
                 if let Some(Ok(result)) = learn_result {
@@ -2403,14 +2403,14 @@ pub async fn run_repl(
                                         });
                                     let dest = skill_dir.join(format!("{skill_name}.md"));
                                     if let Err(e) = std::fs::write(&dest, &skill_src) {
-                                        eprintln!("[aegis] save failed: {e}");
+                                        eprintln!("[goblin] save failed: {e}");
                                     } else {
-                                        eprintln!("[aegis] saved to {}", dest.display());
+                                        eprintln!("[goblin] saved to {}", dest.display());
                                         skill_registry.load_dir_pub(&skill_dir);
                                     }
                                 }
                             } else {
-                                eprintln!("[aegis] skill discarded");
+                                eprintln!("[goblin] skill discarded");
                             }
                         }
                     }
@@ -2421,7 +2421,7 @@ pub async fn run_repl(
                 let skill = match skill_registry.get(&name) {
                     Some(s) => s.clone(),
                     None => {
-                        eprintln!("[aegis] skill `{name}` not found");
+                        eprintln!("[goblin] skill `{name}` not found");
                         continue;
                     }
                 };
@@ -2453,11 +2453,11 @@ pub async fn run_repl(
                     desc = skill.description,
                     body = skill.prompt,
                 );
-                eprintln!("[aegis] asking LLM to improve `{name}`...");
+                eprintln!("[goblin] asking LLM to improve `{name}`...");
                 spinner.begin_turn();
                 let improve_result = tokio::select! {
                     r = agent.run(aegis_core::UserInput::Text(improve_prompt)) => Some(r),
-                    _ = tokio::signal::ctrl_c() => { eprintln!("\n[aegis] interrupted"); None }
+                    _ = tokio::signal::ctrl_c() => { eprintln!("\n[goblin] interrupted"); None }
                 };
                 spinner.end_turn();
                 if let Some(Ok(result)) = improve_result {
@@ -2482,9 +2482,9 @@ pub async fn run_repl(
                                     content.clone()
                                 };
                                 if let Err(e) = std::fs::write(&skill.source, &clean) {
-                                    eprintln!("[aegis] write failed: {e}");
+                                    eprintln!("[goblin] write failed: {e}");
                                 } else {
-                                    eprintln!("[aegis] `{name}` updated");
+                                    eprintln!("[goblin] `{name}` updated");
                                     // Reload
                                     if let Some(home) = dirs::home_dir() {
                                         skill_registry
@@ -2492,7 +2492,7 @@ pub async fn run_repl(
                                     }
                                 }
                             } else {
-                                eprintln!("[aegis] built-in skills can't be overwritten; save manually to ~/.metis/skills/{name}.md");
+                                eprintln!("[goblin] built-in skills can't be overwritten; save manually to ~/.metis/skills/{name}.md");
                             }
                         }
                     }
@@ -2507,21 +2507,21 @@ pub async fn run_repl(
             ReplCommand::TaskAdd(text) => {
                 match crate::tasks::add_task(workspace, &text) {
                     Ok(id) => eprintln!("\x1b[38;2;0;229;209m+\x1b[0m task #{id}: {text}"),
-                    Err(e) => eprintln!("[aegis] {e}"),
+                    Err(e) => eprintln!("[goblin] {e}"),
                 }
                 continue;
             }
             ReplCommand::TaskDone(id) => {
                 match crate::tasks::complete_task(workspace, id) {
                     Ok(text) => eprintln!("\x1b[32m✓\x1b[0m task #{id}: {text}"),
-                    Err(e) => eprintln!("[aegis] {e}"),
+                    Err(e) => eprintln!("[goblin] {e}"),
                 }
                 continue;
             }
             ReplCommand::TaskRm(id) => {
                 match crate::tasks::delete_task(workspace, id) {
                     Ok(text) => eprintln!("\x1b[2m✗ removed task #{id}: {text}\x1b[0m"),
-                    Err(e) => eprintln!("[aegis] {e}"),
+                    Err(e) => eprintln!("[goblin] {e}"),
                 }
                 continue;
             }
@@ -2529,7 +2529,7 @@ pub async fn run_repl(
                 match crate::tasks::clear_done(workspace) {
                     Ok(0) => eprintln!("\x1b[2m(no completed tasks to clear)\x1b[0m"),
                     Ok(n) => eprintln!("\x1b[38;2;0;229;209mcleared {n} completed task(s)\x1b[0m"),
-                    Err(e) => eprintln!("[aegis] {e}"),
+                    Err(e) => eprintln!("[goblin] {e}"),
                 }
                 continue;
             }
@@ -2676,7 +2676,7 @@ pub async fn run_repl(
                             input
                         }
                         Err(e) => {
-                            eprintln!("[aegis] failed to read image(s): {e}");
+                            eprintln!("[goblin] failed to read image(s): {e}");
                             pending_images.clear();
                             continue;
                         }
@@ -2702,7 +2702,7 @@ pub async fn run_repl(
                                 }
                                 BudgetHardStopChoice::Stop => {
                                     eprintln!(
-                                        "\x1b[1;33m[aegis]\x1b[0m turn cancelled \
+                                        "\x1b[1;33m[goblin]\x1b[0m turn cancelled \
                                          (daily budget ${limit:.2} exceeded — at \
                                          ${total_usd:.4}). Run `/budget` or `/exit`."
                                     );
@@ -2738,7 +2738,7 @@ pub async fn run_repl(
                 // so 600s here is belt-and-suspenders for cases where
                 // tool-execution between calls or an infinite tool loop
                 // burns time without hitting the provider timeout. Maps
-                // to None so the user sees the "[aegis] interrupted"
+                // to None so the user sees the "[goblin] interrupted"
                 // path, same UX as Ctrl+C.
                 let hardcap = std::time::Duration::from_secs(600);
                 let run_result = tokio::select! {
@@ -2760,7 +2760,7 @@ pub async fn run_repl(
                     Some(Ok(output)) => {
                         if !drained.is_empty() {
                             eprintln!(
-                                "\x1b[2m[aegis] {} input{} queued\x1b[0m",
+                                "\x1b[2m[goblin] {} input{} queued\x1b[0m",
                                 drained.len(),
                                 if drained.len() == 1 { "" } else { "s" }
                             );
@@ -2788,7 +2788,7 @@ pub async fn run_repl(
                     Some(Err(err)) => {
                         if !drained.is_empty() {
                             eprintln!(
-                                "\x1b[2m[aegis] {} input{} queued\x1b[0m",
+                                "\x1b[2m[goblin] {} input{} queued\x1b[0m",
                                 drained.len(),
                                 if drained.len() == 1 { "" } else { "s" }
                             );
@@ -2810,9 +2810,9 @@ pub async fn run_repl(
 
                         if let Some(ref fb_spec) = fallback {
                             let target = crate::router::RouteTarget::parse(fb_spec);
-                            eprintln!("\x1b[33m[aegis] error: {err:#}\x1b[0m");
+                            eprintln!("\x1b[33m[goblin] error: {err:#}\x1b[0m");
                             eprintln!(
-                                "\x1b[38;2;122;240;227m[aegis] falling back to {fb_spec}…\x1b[0m"
+                                "\x1b[38;2;122;240;227m[goblin] falling back to {fb_spec}…\x1b[0m"
                             );
 
                             // Switch provider if needed.
@@ -2848,12 +2848,12 @@ pub async fn run_repl(
                                             true
                                         }
                                         Err(e) => {
-                                            eprintln!("[aegis] fallback provider `{pname}` unavailable: {e}");
+                                            eprintln!("[goblin] fallback provider `{pname}` unavailable: {e}");
                                             false
                                         }
                                     },
                                     None => {
-                                        eprintln!("[aegis] fallback provider `{pname}` unknown");
+                                        eprintln!("[goblin] fallback provider `{pname}` unknown");
                                         false
                                     }
                                 }
@@ -2900,7 +2900,7 @@ pub async fn run_repl(
                                         turn_count = turn_count.saturating_add(1);
                                     }
                                     Some(Err(e)) => {
-                                        eprintln!("[aegis] fallback also failed: {e:#}")
+                                        eprintln!("[goblin] fallback also failed: {e:#}")
                                     }
                                     None => {
                                         if let Ok(mut r) = md_renderer.lock() {
@@ -2913,8 +2913,8 @@ pub async fn run_repl(
                             }
                         }
 
-                        eprintln!("\x1b[33m[aegis] error: {err:#}\x1b[0m");
-                        eprintln!("\x1b[2m[aegis] {}\x1b[0m", recovery_hint_for_error(&err));
+                        eprintln!("\x1b[33m[goblin] error: {err:#}\x1b[0m");
+                        eprintln!("\x1b[2m[goblin] {}\x1b[0m", recovery_hint_for_error(&err));
                     }
                     None => {
                         // Ctrl+C: discard whatever was typed during
@@ -2923,7 +2923,7 @@ pub async fn run_repl(
                         // prompts as if nothing happened.
                         if !drained.is_empty() {
                             eprintln!(
-                                "\x1b[2m[aegis] discarded {} input{} typed during run (interrupted)\x1b[0m",
+                                "\x1b[2m[goblin] discarded {} input{} typed during run (interrupted)\x1b[0m",
                                 drained.len(),
                                 if drained.len() == 1 { "" } else { "s" }
                             );
@@ -2999,7 +2999,7 @@ pub async fn run_repl(
                 }
             }
             if !conv.is_empty() {
-                eprintln!("[aegis] auto-extracting memory from session...");
+                eprintln!("[goblin] auto-extracting memory from session...");
                 let insight_prompt = format!(
                     "Review this conversation and extract non-obvious facts, decisions, and \
                      learnings worth remembering in future sessions. Focus on:\n\
@@ -3029,7 +3029,7 @@ pub async fn run_repl(
                             .cache_write_tokens
                             .saturating_add(out.usage.cache_write_tokens);
                     }
-                    Err(e) => eprintln!("[aegis] auto-memory error: {e}"),
+                    Err(e) => eprintln!("[goblin] auto-memory error: {e}"),
                 }
                 // Restore session so FT export below still works.
                 if let Some(s) = _session {
@@ -3091,7 +3091,7 @@ pub async fn run_repl(
                 .join("\n");
             if std::fs::write(&out_path, content).is_ok() {
                 eprintln!(
-                    "[aegis] ft export: {} examples → {}",
+                    "[goblin] ft export: {} examples → {}",
                     examples.len(),
                     out_path.display()
                 );
@@ -3119,7 +3119,7 @@ pub async fn run_repl(
         let _ = aegis_core::telemetry::append_record(&record);
     }
 
-    eprintln!("[aegis] bye");
+    eprintln!("[goblin] bye");
     Ok(())
 }
 

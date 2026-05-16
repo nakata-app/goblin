@@ -1,4 +1,4 @@
-//! TUI (Terminal User Interface) mode for `aegis`.
+//! TUI (Terminal User Interface) mode for `goblin`.
 //!
 //! Launches a rich ratatui-based interface with three panels:
 //! - Left (70%): scrollable chat area with color-coded messages
@@ -2138,7 +2138,7 @@ impl TuiApp {
         let dim_style = Style::default().fg(Color::Rgb(140, 140, 140));
         let plain = format!("[image] attached: {fname}{meta_suffix}\n");
         let styled = vec![Line::from(vec![
-            Span::styled("[aegis] ".to_string(), label_style),
+            Span::styled("[goblin] ".to_string(), label_style),
             Span::styled("[image]".to_string(), mag_style),
             Span::styled(format!(" attached: {fname}"), plain_style),
             Span::styled(meta_suffix.clone(), dim_style),
@@ -2609,15 +2609,15 @@ impl TuiApp {
             "commit" => {
                 // Atakan: Aider auto-commit yerine opt-in /commit. Turn'de
                 // değişen dosyalar varsa onları (`turn_files`) stage'le ve
-                // `[aegis] <message>` etiketli commit at. Boş turn'de yapacak
+                // `[goblin] <message>` etiketli commit at. Boş turn'de yapacak
                 // bir şey yok mesajı. Geri-alma için /undo zaten dosya
                 // checkout yapıyor; commit varsa kullanıcı `git revert` ile
                 // de geri alabilir.
                 let raw_msg = rest_after_cmd.trim();
                 let msg = if raw_msg.is_empty() {
-                    "[aegis] auto-commit".to_string()
+                    "[goblin] auto-commit".to_string()
                 } else {
-                    format!("[aegis] {raw_msg}")
+                    format!("[goblin] {raw_msg}")
                 };
                 if self.turn_files.is_empty() {
                     self.push_system("/commit: bu turn'de değişen dosya yok");
@@ -5146,9 +5146,9 @@ impl TuiApp {
                                         list.push(label);
                                     }
                                 }
-                                eprintln!("\x1b[1;32m[aegis] Playwright MCP attached, {n} tools\x1b[0m");
+                                eprintln!("\x1b[1;32m[goblin] Playwright MCP attached, {n} tools\x1b[0m");
                             }
-                            Err(e) => eprintln!("[aegis] failed to attach Playwright: {e}"),
+                            Err(e) => eprintln!("[goblin] failed to attach Playwright: {e}"),
                         }
                     });
                 }
@@ -5169,9 +5169,9 @@ impl TuiApp {
                                         list.push(label);
                                     }
                                 }
-                                eprintln!("\x1b[1;32m[aegis] open-computer-use MCP attached, {n} tools\x1b[0m");
+                                eprintln!("\x1b[1;32m[goblin] open-computer-use MCP attached, {n} tools\x1b[0m");
                             }
-                            Err(e) => eprintln!("[aegis] failed to attach open-computer-use: {e}"),
+                            Err(e) => eprintln!("[goblin] failed to attach open-computer-use: {e}"),
                         }
                     });
                 }
@@ -5268,9 +5268,9 @@ fn build_recap_output(app: &TuiApp, workspace: &Path) -> (String, Vec<Line<'stat
     let provider = app.current_provider.clone();
 
     // Header
-    writeln!(plain, "[aegis] session recap").ok();
+    writeln!(plain, "[goblin] session recap").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label),
+        Span::styled("[goblin] ".to_string(), label),
         Span::styled("session recap".to_string(), label),
     ]));
 
@@ -5652,7 +5652,7 @@ fn build_help_styled() -> (String, Vec<Line<'static>>) {
     blank!();
 
     section!("GİT + TEST + KOD");
-    row!("/commit [mesaj]",           "bu turn'de değişen dosyaları stage + commit eder, prefix `[aegis]`");
+    row!("/commit [mesaj]",           "bu turn'de değişen dosyaları stage + commit eder, prefix `[goblin]`");
     row!("/diff [path|ref|range]",    "working tree diff (uncommitted) ya da git ref/range (örn: HEAD~3, main..HEAD)");
     row!("/test",                     "config'deki `[auto_fix] test_command`'ı çalıştırır — fail ise output agent'a context");
     row!("/lint",                     "config'deki `[auto_fix] lint_command`'ı çalıştırır — fail ise output agent'a context");
@@ -7035,9 +7035,9 @@ fn build_files_listing(
 
     // Shared styles matching REPL: bold section headers, blue dirs,
     // ext-colored files, mid-gray metadata (size + time ago). The
-    // system-label prefix `[aegis] ` is applied to the first line of
+    // system-label prefix `[goblin] ` is applied to the first line of
     // the first chunk so the listing threads into the chat visually
-    // the same way system messages do (green `[aegis]` prefix).
+    // the same way system messages do (green `[goblin]` prefix).
     let sys_color = MessageRole::System.color();
     let label_style = Style::default().fg(sys_color).add_modifier(Modifier::BOLD);
     let bold_header = Style::default().add_modifier(Modifier::BOLD);
@@ -7047,11 +7047,11 @@ fn build_files_listing(
     let mut plain = String::new();
     let mut styled: Vec<Line<'static>> = Vec::new();
 
-    // Header line: `[aegis] browsing files at: <path>`
+    // Header line: `[goblin] browsing files at: <path>`
     let header_text = format!("browsing files at: {}", target_path.display());
     writeln!(plain, "{header_text}").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label_style),
+        Span::styled("[goblin] ".to_string(), label_style),
         Span::styled(header_text, Style::default().fg(sys_color)),
     ]));
 
@@ -7483,7 +7483,7 @@ fn render_context_panel(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
         Line::from(vec![
             Span::styled("● ", Style::default().fg(success)),
             Span::styled(
-                "aegis",
+                "goblin",
                 Style::default().fg(text_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" {}", env!("CARGO_PKG_VERSION")), dim),
@@ -7848,9 +7848,9 @@ fn ansi_to_spans(text: &str) -> Vec<Span<'static>> {
 }
 
 /// Build a `/view <path>` file preview matching REPL's exact structure:
-///   [aegis] previewing: <path>
+///   [goblin] previewing: <path>
 ///     size: <S>, modified: <when>
-///   [aegis] showing first N of M lines:  (or "all N lines")
+///   [goblin] showing first N of M lines:  (or "all N lines")
 ///     LINE  | highlighted content
 ///     ...
 ///     ... (K more lines)   <- only if truncated
@@ -7948,7 +7948,7 @@ fn build_view_output(
     let header1 = format!("previewing: {}", path.display());
     writeln!(plain, "{header1}").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label_style),
+        Span::styled("[goblin] ".to_string(), label_style),
         Span::styled(header1, Style::default().fg(sys_color)),
     ]));
     let size_line = format!("  size: {size_str}, modified: {modified_str}");
@@ -7961,7 +7961,7 @@ fn build_view_output(
         writeln!(plain, "{line1}").ok();
         writeln!(plain, "{line2}").ok();
         styled.push(Line::from(vec![
-            Span::styled("[aegis] ".to_string(), label_style),
+            Span::styled("[goblin] ".to_string(), label_style),
             Span::styled(line1.to_string(), Style::default().fg(sys_color)),
         ]));
         styled.push(Line::from(Span::styled(line2.to_string(), dim)));
@@ -7982,7 +7982,7 @@ fn build_view_output(
     };
     writeln!(plain, "{header2}").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label_style),
+        Span::styled("[goblin] ".to_string(), label_style),
         Span::styled(header2, Style::default().fg(sys_color)),
     ]));
 
@@ -8046,7 +8046,7 @@ fn build_search_output(workspace: &Path, raw: &str) -> (String, Vec<Line<'static
     let header = format!("searching for pattern: \"{pattern}\"");
     writeln!(plain, "{header}").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label_style),
+        Span::styled("[goblin] ".to_string(), label_style),
         Span::styled(header, Style::default().fg(sys_color)),
     ]));
 
@@ -8087,7 +8087,7 @@ fn build_search_output(workspace: &Path, raw: &str) -> (String, Vec<Line<'static
         );
         writeln!(plain, "{msg}").ok();
         styled.push(Line::from(vec![
-            Span::styled("[aegis] ".to_string(), label_style),
+            Span::styled("[goblin] ".to_string(), label_style),
             Span::styled(msg, Style::default().fg(sys_color)),
         ]));
         return (plain, styled);
@@ -8102,7 +8102,7 @@ fn build_search_output(workspace: &Path, raw: &str) -> (String, Vec<Line<'static
     );
     writeln!(plain, "{summary}").ok();
     styled.push(Line::from(vec![
-        Span::styled("[aegis] ".to_string(), label_style),
+        Span::styled("[goblin] ".to_string(), label_style),
         Span::styled(summary, Style::default().fg(sys_color)),
     ]));
 
@@ -8307,8 +8307,8 @@ fn strip_thinking_tags(text: &str) -> String {
 /// Render chat history in REPL style:
 ///   User     →  bold `> message`
 ///   Assistant→  orange prose, no label
-///   System   →  green `[aegis] message`
-///   Error    →  red `[aegis] error`
+///   System   →  green `[goblin] message`
+///   Error    →  red `[goblin] error`
 /// No `[role] ` brackets, no forced indent on wrap — keeps screenshots
 /// of a TUI session visually indistinguishable from a REPL transcript.
 ///
@@ -9140,7 +9140,7 @@ fn push_message_lines(lines: &mut Vec<Line<'static>>, role: MessageRole, text: &
             for (i, text_line) in text.lines().enumerate() {
                 if i == 0 {
                     lines.push(Line::from(vec![
-                        Span::styled("[aegis] ".to_string(), label_style),
+                        Span::styled("[goblin] ".to_string(), label_style),
                         Span::styled(text_line.to_string(), text_style),
                     ]));
                 } else {
@@ -12373,7 +12373,7 @@ async fn tui_main_loop(
                     }
                 }
                 if !conv.is_empty() {
-                    eprintln!("[aegis] auto-extracting memory from session...");
+                    eprintln!("[goblin] auto-extracting memory from session...");
                     let insight_prompt = format!(
                         "Review this conversation and extract non-obvious facts, decisions, and \
                          learnings worth remembering in future sessions. Focus on:\n\
@@ -12417,7 +12417,7 @@ async fn tui_main_loop(
                             };
                             let _ = aegis_core::telemetry::append_record(&record);
                         }
-                        Err(e) => eprintln!("[aegis] auto-memory error: {e}"),
+                        Err(e) => eprintln!("[goblin] auto-memory error: {e}"),
                     }
                 }
             }
@@ -12596,7 +12596,7 @@ async fn run_agent_turn(
         result = agent.run(user_input) => result?,
         _ = tokio::time::sleep(hardcap) => {
             lock_app(&app).push_error(&format!(
-                "[aegis] turn aborted: exceeded {}-minute hardcap",
+                "[goblin] turn aborted: exceeded {}-minute hardcap",
                 hardcap.as_secs() / 60
             ));
             return Ok(());
@@ -16875,10 +16875,10 @@ mod tests {
         app.handle_slash("/files .", tmp.path());
 
         let styled = app.messages[initial].styled_lines.as_ref().unwrap();
-        // First span of first line must be the green-bold `[aegis] `
+        // First span of first line must be the green-bold `[goblin] `
         // prefix so the listing visually threads with system messages.
         let first_span = &styled[0].spans[0];
-        assert!(first_span.content.contains("[aegis]"));
+        assert!(first_span.content.contains("[goblin]"));
         assert_eq!(first_span.style.fg, Some(Color::Rgb(63, 185, 80)));
         assert!(first_span.style.add_modifier.contains(Modifier::BOLD));
     }
@@ -17727,7 +17727,7 @@ mod tests {
             "md file cell must be cyan"
         );
         assert_eq!(
-            fg_at("[aegis]"),
+            fg_at("[goblin]"),
             Some(Color::Rgb(63, 185, 80)),
             "label cell must be green"
         );
@@ -19216,7 +19216,7 @@ edited foo.rs (1 replacement)
     fn compact_queues_flag_and_pushes_queued_system_notice() {
         // /compact flips pending_compact + pushes a "queued — running on
         // next idle tick" line into chat. Main loop then consumes the
-        // flag, runs force_compact, and pushes "[aegis] compacted: N"
+        // flag, runs force_compact, and pushes "[goblin] compacted: N"
         // (byte-identical to REPL) — that branch is covered by REPL
         // integration tests; here we lock the TUI-visible contract.
         let tmp = tempfile::tempdir().unwrap();
