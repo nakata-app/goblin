@@ -26,3 +26,11 @@ test-results/
 
 # WhatsApp bridge session credentials (Baileys auth state)
 src-tauri/whatsapp-bridge/auth/
+
+# Rust build artifacts (Cargo workspace)
+target/
+**/target/
+
+# Metis blob index (local cache, not source)
+.metis/
+crates/cli/.metis/
