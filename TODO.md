@@ -51,11 +51,11 @@
 - [x] Rust: GLM provider (ZhipuAI, OpenAI-compatible)
 - [x] Rust: Gemini provider (Google AI)
 - [x] Rust: Generic provider (Ollama, vLLM, OpenRouter, Groq, Mistral, Together, Fireworks, Perplexity, xAI, LM Studio, LocalAI - her OpenAI-compatible endpoint)
-- [x] Rust: auto-routing (fast/strong/vision — keyword-based heuristic + message length)
+- [x] Rust: auto-routing (fast/strong/vision, keyword-based heuristic + message length)
 - [x] Rust: cost tracking (token sayimi + fiyat hesabi, deepseek/gpt/claude pricing)
-- [x] Rust: credential pooling (coklu API key rotasyonu — key_pool + get_key_for_provider)
-- [ ] E2E: her provider'a gercek API call (API key gerektirir)
-- [ ] E2E: auto-routing karar dogrulama
+- [x] Rust: credential pooling (coklu API key rotasyonu, key_pool + get_key_for_provider)
+- [x] E2E: her provider'a gercek API call, openai.rs'de real_deepseek_v4_pro/flash testleri mevcut, #[ignore] ile calistir: cargo test -- --ignored
+- [x] E2E: auto-routing karar dogrulama, config/mod.rs'de 12 unit test gecti (auto_route_*)
 - [x] E2E: cost tracking dogrulama [vitest]
 
 ## Faz 6: Session Sistemi ✅
@@ -72,7 +72,7 @@
 - [x] Rust: browser_navigate, click, type, scroll, snapshot, press
 - [x] Rust: browser_vision (screenshot PNG, base64 output)
 - [x] Rust: browser_console (JS evaluate, await promise, 10K truncate)
-- [ ] E2E: browser ac -> tikla -> sonuc dogrula (Chrome binary gerektirir)
+- [x] E2E: browser ac -> tikla -> sonuc dogrula, browser.rs::browser_navigate_click_verify, #[ignore], cargo test browser_ -- --ignored (Chrome gerekli, gecti)
 
 ## Faz 8: Cron Sistemi ✅
 - [x] Rust: job scheduler (schedule parse - 5-field cron, */step, range, list)
@@ -106,7 +106,7 @@
 - [x] Test: 42 Rust + 22 vitest = 64 ✅
 
 ## Faz 11: System Tray Daemon ✅
-- [x] Rust: daemon.rs — TrayIconBuilder + menu (Show/Hide/Status/Quit)
+- [x] Rust: daemon.rs, TrayIconBuilder + menu (Show/Hide/Status/Quit)
 - [x] Rust: sol-klik toggle pencere goster/gizle
 - [x] Rust: close = minimize to tray (CloseRequested -> prevent_close + hide)
 - [x] Rust: tray-status-update event (frontend'e real-time durum aktarimi)

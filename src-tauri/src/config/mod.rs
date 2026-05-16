@@ -339,10 +339,6 @@ fn default_max_depth() -> u32 { 3 }
 fn default_max_children() -> u32 { 5 }
 fn default_true() -> bool { true }
 
-// Trigger-based multi-agent routing config — wired in config.toml but
-// not yet consumed by the agent loop. Kept here so the routing path can
-// be turned on by the loop without re-introducing the surface.
-#[allow(dead_code)]
 impl Config {
     pub fn route_to_agent(&self, user_message: &str) -> Option<&AgentProfile> {
         if !self.providers.multi_agent.enabled || self.providers.multi_agent.agents.is_empty() {

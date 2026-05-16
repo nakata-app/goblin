@@ -1028,7 +1028,7 @@ export function ConfigPanel({ isOpen, onToggle, onConfigSaved }: ConfigPanelProp
           {activeTab === 'mnemonics' && (
             <div className="config-section">
               <p className="config-section-desc">
-                Cross-project semantic memory via Atakan's `mnemonics` binary. Goblin auto-detects
+                Cross-project semantic memory via the `mnemonics` binary. Goblin auto-detects
                 the binary at boot; if it is missing the agent simply loses the
                 <code> mnemonics_retrieve</code> / <code> mnemonics_ingest</code> tools.
               </p>

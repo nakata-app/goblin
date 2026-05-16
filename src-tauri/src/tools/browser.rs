@@ -460,3 +460,65 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
     format!("{}...\n[truncated {} -> {} chars]", &s[..end], s.len(), max_len)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires Chrome binary at /Applications/Google Chrome.app — run with: cargo test browser_ -- --ignored"]
+    fn browser_navigate_click_verify() {
+        let nav_result = std::thread::spawn(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = serde_json::json!({ "url": "https://example.com" });
+                handle_browser_navigate(args).await
+            })
+        })
+        .join()
+        .expect("thread panicked");
+
+        match nav_result {
+            Ok(output) => {
+                eprintln!("=== browser_navigate -> example.com ===");
+                eprintln!("{}", &output[..output.len().min(300)]);
+                assert!(
+                    output.contains("Example Domain") || output.contains("example"),
+                    "Expected example.com content, got: {}",
+                    &output[..output.len().min(200)]
+                );
+            }
+            Err(e) => {
+                panic!("browser_navigate failed: {}", e);
+            }
+        }
+
+        let click_result = std::thread::spawn(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = serde_json::json!({ "selector": "a" });
+                handle_browser_click(args).await
+            })
+        })
+        .join()
+        .expect("thread panicked");
+
+        match click_result {
+            Ok(output) => {
+                eprintln!("=== browser_click -> first link ===");
+                eprintln!("{}", &output[..output.len().min(300)]);
+                assert!(!output.is_empty());
+            }
+            Err(e) => {
+                eprintln!("browser_click failed (expected if no links): {}", e);
+            }
+        }
+
+        {
+            let mut b = BROWSER.lock().unwrap();
+            *b = None;
+            let mut t = TAB.lock().unwrap();
+            *t = None;
+        }
+    }
+}

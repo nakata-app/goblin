@@ -108,12 +108,21 @@ async fn send_message(
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
 
-    let selected_model = if model.is_none() {
+    let (selected_model, profile_context, matched_profile) = {
         let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
-        let auto = cfg.auto_route_model(&message, false);
-        Some(auto.to_string())
-    } else {
-        model
+        let base_model = if let Some(ref m) = model {
+            m.clone()
+        } else {
+            cfg.auto_route_model(&message, false).to_string()
+        };
+        if let Some(profile) = cfg.route_to_agent(&message) {
+            let m = profile.model.clone().unwrap_or(base_model);
+            let ctx = profile.system_prompt.clone();
+            let name = profile.name.clone();
+            (m, ctx, Some(name))
+        } else {
+            (base_model, None, None)
+        }
     };
 
     let agent = agent_guard
@@ -123,7 +132,8 @@ async fn send_message(
     // Emit progress: thinking started
     let _ = app.emit("agent-progress", serde_json::json!({
         "type": "thinking",
-        "model": selected_model.as_deref().unwrap_or("auto"),
+        "model": selected_model,
+        "agent_profile": matched_profile,
     }));
 
     // Channel for real-time tool progress events from the agent loop
@@ -139,7 +149,7 @@ async fn send_message(
 
     let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx), soul.as_deref())
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref())
         .await;
 
     // Ensure progress task completes
@@ -293,17 +303,28 @@ async fn send_message_in_session(
     let memories = inject::inject_memories(&state.memory, &ns, 5);
     let learned = inject::inject_learned(&state.memory, 5);
 
-    let selected_model = if model.is_none() {
+    let (selected_model, profile_context, matched_profile) = {
         let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?;
-        Some(cfg.auto_route_model(&message, false).to_string())
-    } else {
-        model
+        let base_model = if let Some(ref m) = model {
+            m.clone()
+        } else {
+            cfg.auto_route_model(&message, false).to_string()
+        };
+        if let Some(profile) = cfg.route_to_agent(&message) {
+            let m = profile.model.clone().unwrap_or(base_model);
+            let ctx = profile.system_prompt.clone();
+            let name = profile.name.clone();
+            (m, ctx, Some(name))
+        } else {
+            (base_model, None, None)
+        }
     };
 
     let _ = app.emit("agent-progress", serde_json::json!({
         "type": "thinking",
         "session_id": session_id,
-        "model": selected_model.as_deref().unwrap_or("auto"),
+        "model": selected_model,
+        "agent_profile": matched_profile,
     }));
 
     // Stream tool/reasoning/content chunks back to the window as the
@@ -323,7 +344,7 @@ async fn send_message_in_session(
 
     let soul = agent::soul::load_soul();
     let response = agent
-        .send_message(&message, None, &memories, &learned, selected_model.as_deref(), Some(progress_tx), soul.as_deref())
+        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), soul.as_deref())
         .await;
 
     progress_task.abort();

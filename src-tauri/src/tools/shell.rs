@@ -203,7 +203,9 @@ pub fn bash_background_kill_def() -> ToolDefinition {
 }
 
 pub async fn handle_bash(args: serde_json::Value) -> Result<String, String> {
-    let command = args["command"].as_str().ok_or("command required")?;
+    let command = args["command"].as_str()
+        .or_else(|| args["cmd"].as_str())
+        .ok_or("command required — pass {\"command\": \"...\"}")?;
     check_shell_guards(command)?;
     let workdir = args["workdir"].as_str();
     let timeout = args["timeout"].as_u64().unwrap_or(60).clamp(1, 300);
@@ -270,7 +272,9 @@ fn truncate_utf8(s: &str, max_bytes: usize, suffix: &str) -> String {
 }
 
 pub async fn handle_bash_background(args: serde_json::Value) -> Result<String, String> {
-    let command = args["command"].as_str().ok_or("command required")?;
+    let command = args["command"].as_str()
+        .or_else(|| args["cmd"].as_str())
+        .ok_or("command required — pass {\"command\": \"...\"}")?;
     check_shell_guards(command)?;
     let workdir = args["workdir"].as_str();
 

@@ -63,7 +63,9 @@ pub fn sandbox_list_def() -> ToolDefinition {
 }
 
 pub async fn handle_sandbox_exec(args: serde_json::Value) -> Result<String, String> {
-    let command = args["command"].as_str().ok_or("command required")?;
+    let command = args["command"].as_str()
+        .or_else(|| args["cmd"].as_str())
+        .ok_or("command required — pass {\"command\": \"...\"}")?;
     let image = args["image"].as_str().unwrap_or("ubuntu:22.04");
     let workdir = args["workdir"].as_str().unwrap_or("/workspace");
     let timeout = args["timeout"].as_u64().unwrap_or(60).min(300);

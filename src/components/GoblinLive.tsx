@@ -191,7 +191,7 @@ export const GoblinLive = memo(function GoblinLive({
   presenceState,
   animationIntent,
 }: GoblinLiveProps) {
-  const { vector, mood, primaryEmotion, intensity } = emotionalState;
+  const { vector, mood, intensity } = emotionalState;
   const { blinkProgress, eyeGazeX, eyeGazeY, breathePhase, headTilt, earWiggle } = presenceState;
   const { animationState } = animationIntent;
 
@@ -289,7 +289,7 @@ export const GoblinLive = memo(function GoblinLive({
     : animationState === 'running_active' ? 'Running'
     : animationState === 'error_shock' ? 'Error'
     : animationState === 'success_celebrate' ? 'Done'
-    : (primaryEmotion ?? 'Ready');
+    : 'Ready';
 
   return (
     <div className={`goblin-live${isActive ? ' goblin-live-active' : ''}${isSpeaking ? ' goblin-live-speaking' : ''}`}>
@@ -483,7 +483,7 @@ export const GoblinLive = memo(function GoblinLive({
         </svg>
 
         <div className="goblin-live-label">{stateLabel}</div>
-        <div className="goblin-live-hint">{animationState}</div>
+        <div className="goblin-live-hint">⌘K for commands</div>
       </div>
     </div>
   );

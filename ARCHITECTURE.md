@@ -2,106 +2,129 @@
 
 ## Overview
 Goblin is a desktop AI agent app. Tauri (Rust backend) + React/TypeScript (frontend).
-Combines the best of Metis/Aegis (Rust agent tools, TUI, auto-routing, mnemonics, cost tracking)
-with Hermes (cron, delegation, browser, TTS, platform delivery, session search, skills).
 
 ## Stack
 - Frontend: React 19 + TypeScript + Vite
 - Backend: Tauri 2 (Rust)
 - Database: SQLite (via Tauri plugin)
 - State: Zustand
-- Styling: CSS (dark theme, reference design enforced)
+- Styling: CSS (dark theme)
 
 ## Directory Structure
 
 ```
 goblin/
-├── src/                        # Frontend (React)
+├── src/                          # Frontend (React)
 │   ├── components/
-│   │   ├── ChatPanel.tsx       # Left panel: messages
-│   │   ├── GoblinCharacter.tsx # Character animation strip
-│   │   ├── InputBar.tsx        # Message input
-│   │   ├── OutputPanel.tsx     # Right panel: tool output
-│   │   ├── StatusBar.tsx       # Bottom status bar
-│   │   └── Sidebar.tsx         # Session history sidebar
+│   │   ├── App.tsx               # Root layout, tab routing
+│   │   ├── ChatPanel.tsx         # Left panel: message thread
+│   │   ├── InputBar.tsx          # Chat input + dropzone
+│   │   ├── OutputPanel.tsx       # Right panel: tool/streaming output
+│   │   ├── RightTabs.tsx         # Tab switcher (Output / WhatsApp / ...)
+│   │   ├── StatusBar.tsx         # Bottom bar: model, cost, turn
+│   │   ├── TabBar.tsx            # Multi-session tabs
+│   │   ├── Sidebar.tsx           # Session history sidebar
+│   │   ├── CommandPalette.tsx    # ⌘K command palette (15 commands)
+│   │   ├── ConfigPanel.tsx       # Settings panel
+│   │   ├── SessionPicker.tsx     # Session resume picker
+│   │   ├── ErrorBoundary.tsx
+│   │   ├── GoblinCharacter.tsx   # CSS-animated goblin sprite (state-based)
+│   │   ├── GoblinLive.tsx        # Procedural 2D goblin (canvas)
+│   │   ├── Goblin3D.tsx          # Three.js 3D goblin (optional)
+│   │   └── WhatsappPanel.tsx     # WhatsApp contacts + conversation view
 │   ├── hooks/
-│   │   ├── useAgent.ts         # Agent loop hook
-│   │   └── useGoblinState.ts   # Character state hook
+│   │   ├── useAgent.ts           # Agent loop hook (Tauri IPC)
+│   │   └── useGoblinState.ts     # Character animation state
 │   ├── stores/
-│   │   ├── chatStore.ts        # Message state (Zustand)
-│   │   └── agentStore.ts       # Agent/tool state (Zustand)
+│   │   ├── chatStore.ts          # Message state (Zustand)
+│   │   ├── agentStore.ts         # Agent/tool running state
+│   │   ├── characterStore.ts     # Goblin emotional/animation state
+│   │   ├── sessionStore.ts       # Active session metadata
+│   │   └── tabsStore.ts          # Multi-tab state
+│   ├── __tests__/                # Vitest unit + E2E tests
+│   │   ├── agent-loop.e2e.test.ts
+│   │   ├── pure-functions.test.ts
+│   │   ├── sessionStore.test.ts
+│   │   └── stores.test.ts
 │   ├── styles/
 │   │   ├── global.css
 │   │   └── app.css
-│   ├── types/
-│   │   └── index.ts
-│   ├── App.tsx
-│   └── main.tsx
-├── src-tauri/                  # Backend (Rust)
+│   └── types/index.ts
+├── e2e/                          # Playwright smoke tests
+│   ├── app.spec.ts
+│   └── smoke.spec.ts
+├── src-tauri/                    # Backend (Rust)
 │   ├── src/
+│   │   ├── lib.rs                # All Tauri commands registered here
 │   │   ├── main.rs
+│   │   ├── daemon.rs             # System tray daemon
+│   │   ├── headless.rs           # Headless/CLI mode
+│   │   ├── task.rs               # TaskStore (in-memory task tracking)
 │   │   ├── agent/
-│   │   │   ├── loop.rs         # Core conversation loop
-│   │   │   ├── prompt.rs       # System prompt builder
-│   │   │   └── context.rs      # Context window management
+│   │   │   ├── loop.rs           # Core conversation loop (LLM → tool → continue)
+│   │   │   ├── prompt.rs         # System prompt builder + memory injection
+│   │   │   ├── context.rs        # Context window management (token trim)
+│   │   │   └── soul.rs           # Goblin personality layer
 │   │   ├── tools/
-│   │   │   ├── mod.rs
-│   │   │   ├── file_ops.rs     # read_file, write_file, edit_file, multi_edit
-│   │   │   ├── search.rs       # grep, glob
-│   │   │   ├── shell.rs        # bash, bash_background
-│   │   │   ├── web.rs          # web_search, web_fetch
-│   │   │   ├── browser.rs      # browser_navigate, click, type, scroll, snapshot, vision
-│   │   │   ├── memory.rs       # memory_add, search, remove, stats + auto-observe + auto-inject
-│   │   │   ├── session.rs      # session_search, session_list
-│   │   │   ├── cron.rs         # cron_create, list, remove, run
-│   │   │   ├── delegation.rs   # delegate_task
-│   │   │   ├── git.rs          # status, diff, commit, log, pr_create
-│   │   │   ├── vision.rs       # vision_analyze
-│   │   │   ├── tts.rs          # text_to_speech
-│   │   │   ├── skills.rs       # skill_list, view, manage
-│   │   │   ├── todo.rs         # task list
-│   │   │   ├── mnemonics.rs    # mnemonics_add, retrieve, observe, learn (native)
-│   │   │   ├── mcp.rs          # MCP client (connect external servers)
-│   │   │   ├── obsidian.rs     # Obsidian vault read/write/search
-│   │   │   ├── peer.rs         # Peer communication (CC inter-agent)
-│   │   │   ├── premortem.rs    # Risk analysis: assume failure 6mo out, work backward
-│   │   │   └── eisenhower.rs   # Eisenhower matrix: urgency/importance task quadrant
-│   │   ├── memory/
-│   │   │   ├── mod.rs
-│   │   │   ├── db.rs           # SQLite schema, CRUD
-│   │   │   ├── observe.rs      # Auto-observe every tool call
-│   │   │   ├── inject.rs       # Auto-inject relevant memories per turn
-│   │   │   ├── reinforcement.rs # Learn from user rejections
-│   │   │   └── compact.rs      # Pruning policy (age + tier + access)
+│   │   │   ├── mod.rs            # Tool registry + dispatch
+│   │   │   ├── file_ops.rs       # read_file, write_file, edit_file, multi_edit
+│   │   │   ├── search.rs         # grep, glob
+│   │   │   ├── shell.rs          # bash, bash_background
+│   │   │   ├── web.rs            # web_search, web_fetch
+│   │   │   ├── browser.rs        # browser_navigate, click, type, scroll, snapshot, browser_vision
+│   │   │   ├── media.rs          # vision_analyze, text_to_speech, voice_record
+│   │   │   ├── git.rs            # status, diff, commit, log, pr_create
+│   │   │   ├── skills.rs         # skill_list, skill_view, skill_manage, skill_search
+│   │   │   ├── mcp.rs            # MCP client (connect external MCP servers)
+│   │   │   ├── mcp_server.rs     # MCP server mode (expose Goblin as MCP server)
+│   │   │   ├── vault.rs          # obsidian_read, obsidian_write, obsidian_search, vault_stats
+│   │   │   ├── peer.rs           # peer_send, peer_broadcast, peer_status, peer_coordinate
+│   │   │   ├── sandbox.rs        # sandbox_exec, sandbox_list (Docker isolation)
+│   │   │   ├── meta.rs           # delegate_task, premortem, eisenhower
+│   │   │   └── compactor.rs      # Context compaction helpers
 │   │   ├── provider/
-│   │   │   ├── mod.rs          # Provider trait + routing
-│   │   │   ├── openai.rs       # OpenAI-compatible (DeepSeek, GLM, etc.)
-│   │   │   ├── anthropic.rs    # Anthropic API
-│   │   │   ├── nvidia.rs       # NVIDIA NIM
-│   │   │   └── auto_route.rs   # Auto-routing (fast/strong/vision)
+│   │   │   ├── mod.rs            # Provider trait + ProviderResponse types
+│   │   │   ├── openai.rs         # OpenAI-compatible (DeepSeek, GLM, Ollama, etc.)
+│   │   │   ├── anthropic.rs      # Anthropic Messages API (SSE streaming)
+│   │   │   ├── nvidia.rs         # NVIDIA NIM (SSE streaming)
+│   │   │   ├── gemini.rs         # Google Gemini
+│   │   │   └── glm.rs            # ZhipuAI GLM
+│   │   ├── memory/
+│   │   │   ├── db.rs             # SQLite schema + CRUD (memories, observations, learned)
+│   │   │   ├── embed.rs          # Embedding for semantic search
+│   │   │   ├── observe.rs        # Auto-observe every tool call
+│   │   │   ├── inject.rs         # Auto-inject relevant memories per turn
+│   │   │   ├── reinforcement.rs  # Learn from user rejections (learned table)
+│   │   │   └── compact.rs        # Pruning policy (age + tier + access count)
 │   │   ├── session/
-│   │   │   ├── mod.rs
-│   │   │   ├── store.rs        # SQLite session store
-│   │   │   └── search.rs       # FTS5 full-text search
+│   │   │   ├── store.rs          # SQLite session store + JSONL messages
+│   │   │   └── search.rs         # FTS5 full-text session search
+│   │   ├── mnemonics/
+│   │   │   └── mod.rs            # Bridge to external mnemonics binary (MCP)
+│   │   ├── cron/
+│   │   │   └── mod.rs            # Cron scheduler + agent/script runner
+│   │   ├── channel/
+│   │   │   ├── mod.rs            # Channel trait + routing
+│   │   │   ├── telegram.rs       # Telegram bot channel
+│   │   │   └── webhook.rs        # Generic webhook channel
+│   │   ├── whatsapp/
+│   │   │   ├── mod.rs            # WhatsApp bridge (WIP)
+│   │   │   └── db.rs             # WhatsApp conversation SQLite store
 │   │   ├── config/
-│   │   │   └── mod.rs          # config.toml parsing
-│   │   └── cron/
-│   │       ├── mod.rs
-│   │       ├── scheduler.rs    # Job scheduler
-│   │       └── runner.rs       # Agent vs script mode
+│   │   │   └── mod.rs            # config.toml parsing + AgentProfile routing
+│   │   ├── http/
+│   │   │   └── mod.rs            # Embedded HTTP server
+│   │   ├── mcp/
+│   │   │   └── mod.rs            # MCP protocol types
+│   │   └── plugin/
+│   │       └── mod.rs            # Plugin host
 │   ├── Cargo.toml
 │   └── tauri.conf.json
-├── test/
-│   ├── e2e/
-│   │   ├── agent_loop.test.ts
-│   │   ├── memory.test.ts
-│   │   └── tools.test.ts
-│   └── unit/
-│       ├── memory.test.ts
-│       └── provider.test.ts
 ├── package.json
-├── tsconfig.json
 ├── vite.config.ts
+├── vitest.config.ts
+├── playwright.config.ts
+├── TODO.md
 └── ARCHITECTURE.md
 ```
 
@@ -110,7 +133,7 @@ goblin/
 ```sql
 CREATE TABLE memories (
   id TEXT PRIMARY KEY,
-  ns TEXT NOT NULL,           -- namespace: sessions, proj:xxx, reference, feedback
+  ns TEXT NOT NULL,           -- namespace: proj:xxx, global, feedback
   tier INTEGER DEFAULT 1,    -- 1=normal, 2=important, 3=critical
   text TEXT NOT NULL,
   meta TEXT,                  -- JSON metadata
@@ -180,45 +203,33 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(text, ns);
 1. Every turn start -> query memories by ns+tier relevance
 2. Query learned preferences by reinforcement_count DESC
 3. Inject into system prompt as structured block
-4. If project dir has .goblin/ -> merge project-scoped memories too
+4. If project dir has .goblin/ -> merge project-scoped memories
 
 ## Compact Policy
 
 - tier 1, not accessed in 30 days -> archive
 - tier 2+, never auto-archive
-- Sessions older than 90 days -> compress summary only
-
-## Premortem Flow
-
-1. Given a plan/decision/commit -> assume it failed 6 months from now
-2. Identify all root causes: technical, operational, dependency, human error
-3. For each cause: how it manifests, prevention/mitigation, detection criteria, owner
-4. Return risk list + revised plan with blind spots exposed
-5. Store premortem results -> memory (tier 2+), linked to session
-
-## Eisenhower Matrix
-
-1. Given a task/issue list -> classify by urgency + importance into 4 quadrants:
-   - Q1: Do First (urgent + important)
-   - Q2: Schedule (not urgent + important)
-   - Q3: Delegate (urgent + not important)
-   - Q4: Eliminate (not urgent + not important)
-2. Persist matrix state per session/project -> revisitable
-3. Agent can suggest reclassification based on changing context
+- Sessions older than 90 days -> compress to summary only
 
 ## Provider Auto-Routing
 
-- Fast model: deepseek-v4-flash (coding, simple tasks)
-- Strong model: deepseek-v4-pro (complex reasoning)
+Config-driven via `~/.goblin/config.toml` `[agent_profiles]`. Each profile has:
+- `models`: list of preferred models
+- `triggers`: keyword patterns that activate this profile
+- `tools`: allowed tool list
+
+Default routing (without profiles):
+- Fast tasks: deepseek-v4-flash
+- Complex tasks: deepseek-v4-pro
 - Vision: llama-3.2-90b-vision or provider's vision model
-- Route based on: task complexity, image input, user override
 
-## Character Animation
+Route decision lives in `config/mod.rs::route_to_agent()`, currently wired in config
+but not yet called from the agent loop (pending integration).
 
-- Goblin character displayed in left panel strip
-- States: idle, thinking, reading, writing, searching, running, error, success
-- Animation: CSS keyframes + sprite sheet (user will generate via ChatGPT)
-- State mapped from agent's current tool activity
+## WhatsApp (WIP)
+
+WhatsApp bridge runs as a sidecar. Status: basic send/receive + SQLite persistence works,
+auto-reply agent loop integrated. Not production-ready, untracked files, no feature flag.
 
 ## Phases
 

@@ -988,12 +988,12 @@ kbd {
 .panel-resize-handle::after {
   content: '';
   position: absolute;
-  inset: 0 -7px;
+  inset: 0 -12px 0 0;
 }
 
-/* Second resize handle (between center and right panel): only extend left */
+/* Second resize handle: extend only to the left */
 .panel-resize-handle-right::after {
-  inset: 0 0 0 -7px;
+  inset: 0 0 0 -12px;
 }
 
 body.resizing {
@@ -2666,12 +2666,46 @@ select.config-input {
   gap: 4px;
 }
 
-/* Checkbox */
+/* Checkbox — native (fallback) */
 input[type="checkbox"] {
   accent-color: var(--accent);
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+/* Config panel toggle switches */
+.config-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.2);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+.config-row input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.55);
+  transition: transform 0.2s, background 0.2s;
+}
+.config-row input[type="checkbox"]:checked {
+  background: rgba(16,185,129,0.3);
+  border-color: rgba(16,185,129,0.6);
+}
+.config-row input[type="checkbox"]:checked::after {
+  transform: translateX(14px);
+  background: var(--accent);
 }
 
 /* Buttons */

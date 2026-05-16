@@ -84,6 +84,7 @@ mod tests {
     use crate::config::Config;
 
     #[tokio::test]
+    #[ignore = "requires network + ~/.goblin/config.toml with [providers.openai]"]
     async fn real_deepseek_v4_pro_api_call() {
         let config = Config::load().expect("Failed to load config");
         let openai_cfg = config.providers.openai
@@ -125,6 +126,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires network + ~/.goblin/config.toml with [providers.openai]"]
     async fn real_deepseek_v4_flash_api_call() {
         let config = Config::load().expect("Failed to load config");
         let openai_cfg = config.providers.openai
