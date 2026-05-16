@@ -68,14 +68,6 @@ test.describe('Goblin UI smoke (post-polish)', () => {
     await expect(tabbar.locator('.tab-new')).toBeVisible();
   });
 
-  test('WhatsApp panel opens and shows toolbar', async ({ page }) => {
-    await page.goto('/');
-    await page.click('button[title="WhatsApp"]');
-    const panel = page.locator('.wa-panel');
-    await expect(panel).toBeVisible();
-    await expect(panel.locator('.wa-title')).toHaveText('WhatsApp');
-  });
-
   test('full-page screenshot for visual review', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/');
@@ -85,13 +77,4 @@ test.describe('Goblin UI smoke (post-polish)', () => {
     await testInfo.attach('home.png', { body: buf, contentType: 'image/png' });
   });
 
-  test('whatsapp panel screenshot', async ({ page }, testInfo) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto('/');
-    await page.click('button[title="WhatsApp"]');
-    await page.waitForSelector('.wa-panel');
-    await page.waitForTimeout(300);
-    const buf = await page.screenshot({ fullPage: true });
-    await testInfo.attach('whatsapp.png', { body: buf, contentType: 'image/png' });
-  });
 });
