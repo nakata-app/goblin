@@ -92,6 +92,19 @@ body.tauri-overlay .panel-chat .panel-header {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.project-btn {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-btn-active {
+  color: var(--text-primary);
+  border-color: rgba(100, 220, 120, 0.25);
+  background: rgba(100, 220, 120, 0.06);
+}
+
 .header-btn:disabled {
   opacity: 0.3;
   cursor: default;

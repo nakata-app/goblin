@@ -7,6 +7,7 @@ import { useTabsStore } from './stores/tabsStore';
 import type { TabSnapshot } from './stores/tabsStore';
 import { useAgent } from './hooks/useAgent';
 import { useGoblinState } from './hooks/useGoblinState';
+import { useProjectStore } from './stores/projectStore';
 import { ChatPanel } from './components/ChatPanel';
 import { GoblinCharacter } from './components/GoblinCharacter';
 import { GoblinLive } from './components/GoblinLive';
@@ -154,6 +155,16 @@ function App() {
       error: null,
     });
   }, [setRightPanel]);
+
+  const cwd = useProjectStore((s) => s.cwd);
+  const setCwd = useProjectStore((s) => s.setCwd);
+
+  const handlePickDirectory = useCallback(async () => {
+    try {
+      const path = await invoke<string | null>('pick_directory');
+      if (path) setCwd(path);
+    } catch { /* kullanıcı iptal etti */ }
+  }, [setCwd]);
 
   const [cmdOpen, setCmdOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -584,6 +595,13 @@ function App() {
         <div className="panel-header">
           <span className="panel-header-title">goblin</span>
           <div className="panel-header-actions">
+            <button
+              className={`header-btn project-btn ${cwd ? 'project-btn-active' : ''}`}
+              onClick={handlePickDirectory}
+              title={cwd ?? 'Proje klasörü seç'}
+            >
+              {cwd ? `📁 ${cwd.split('/').pop()}` : '📁 proje'}
+            </button>
             <div className="model-picker">
               <button
                 className={`header-pill ${model.includes('pro') || model.includes('opus') || model.includes('sonnet') ? 'header-pill-pro' : 'header-pill-fast'}`}
