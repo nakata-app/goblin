@@ -64,6 +64,10 @@ struct AppState {
     mnemonics: Option<Arc<MnemonicsClient>>,
     plugins: Arc<PluginRegistry>,
     mcp: Arc<McpHub>,
+    // Shared across every AgentLoop. Holds the oneshot::Sender side of
+    // each pending tool-approval request so the `tool_approval_response`
+    // Tauri command can resume the waiter.
+    approval_gate: Arc<tools::approval::ApprovalGate>,
 }
 
 fn calculate_cost(tokens_in: u32, tokens_out: u32, model: &str) -> f64 {
@@ -235,6 +239,69 @@ async fn list_projects(root: Option<String>) -> Vec<ProjectInfo> {
     projects
 }
 
+/// Frontend ApprovalModal calls this with the user's decision for a
+/// dangerous tool. Resumes the corresponding waiter in the agent loop.
+#[tauri::command]
+async fn tool_approval_response(
+    state: State<'_, AppState>,
+    id: String,
+    approved: bool,
+) -> Result<(), String> {
+    state.approval_gate.respond(&id, approved)
+}
+
+/// Inline attachment shape the frontend posts over IPC. The browser
+/// reads the file with FileReader, base64-encodes the bytes, and hands
+/// us the body + mime — we never see (or need) an OS path, which keeps
+/// the same Tauri command usable from the web/preview build.
+#[derive(serde::Deserialize)]
+struct AttachmentInput {
+    mime_type: String,
+    /// Raw base64 body. Caller MUST NOT include a `data:` prefix; this
+    /// is the same shape we then serialize back out to each provider.
+    data: String,
+}
+
+/// Max image size accepted on the IPC boundary, computed against the
+/// decoded bytes. Anthropic caps a single image at 5MB base64-decoded;
+/// we match that here to keep behaviour consistent across providers,
+/// and reject anything larger before it ever hits a wire serializer.
+const MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+const ALLOWED_MIMES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// Validate + normalise a batch of frontend attachments into the
+/// provider-agnostic `Attachment` shape that the agent loop carries.
+fn load_attachments(inputs: &[AttachmentInput]) -> Result<Vec<provider::Attachment>, String> {
+    use base64::Engine as _;
+    let mut out = Vec::with_capacity(inputs.len());
+    for inp in inputs {
+        let mime = inp.mime_type.to_ascii_lowercase();
+        if !ALLOWED_MIMES.contains(&mime.as_str()) {
+            return Err(format!(
+                "Unsupported attachment mime '{}'. Allowed: {}",
+                inp.mime_type,
+                ALLOWED_MIMES.join(", "),
+            ));
+        }
+        // Verify base64 decodes cleanly and stays under the size cap.
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(inp.data.as_bytes())
+            .map_err(|e| format!("Attachment base64 invalid: {}", e))?;
+        if decoded.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "Attachment is {} bytes; limit is {}MB",
+                decoded.len(),
+                MAX_ATTACHMENT_BYTES / 1024 / 1024,
+            ));
+        }
+        out.push(provider::Attachment {
+            mime_type: mime,
+            data: inp.data.clone(),
+        });
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 async fn pick_directory() -> Option<String> {
     tokio::task::spawn_blocking(|| {
@@ -255,7 +322,12 @@ async fn send_message(
     message: String,
     model: Option<String>,
     cwd: Option<String>,
+    attachments: Option<Vec<AttachmentInput>>,
 ) -> Result<serde_json::Value, String> {
+    let loaded_attachments = match attachments {
+        Some(paths) if !paths.is_empty() => load_attachments(&paths)?,
+        _ => Vec::new(),
+    };
     let session_id = state.session_id.lock().map_err(|e| format!("Lock error: {}", e))?.clone();
     // Resolve the foreground tab's slot rather than the bootstrap one.
     // Each session id now owns an independent Mutex<Option<AgentLoop>>,
@@ -315,7 +387,7 @@ async fn send_message(
         (None, s)            => s.map(|s| s.to_string()),
     };
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
+        .send_message_with_attachments(&message, loaded_attachments, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     // Ensure progress task completes
@@ -411,7 +483,7 @@ fn ensure_session_slot(
     // agent honours whatever the user has configured right now.
     let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
     let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
-    let mut new_agent = init_agent(&cfg, registry);
+    let mut new_agent = init_agent(&cfg, registry, state.approval_gate.clone());
 
     // Hydrate from session_store if the session has prior messages.
     if let Ok(Some(rec)) = state.session_store.get(session_id) {
@@ -437,7 +509,7 @@ fn ensure_session_slot(
 fn spawn_session_agent(state: &AppState, session_id: &str) -> Result<(), String> {
     let cfg = state.config.read().map_err(|e| format!("Config lock: {}", e))?.clone();
     let registry = state.tool_registry.read().map_err(|e| format!("Registry lock: {}", e))?.clone();
-    let new_agent = init_agent(&cfg, registry);
+    let new_agent = init_agent(&cfg, registry, state.approval_gate.clone());
     let slot = Arc::new(Mutex::new(new_agent));
     state
         .agents
@@ -455,7 +527,12 @@ async fn send_message_in_session(
     message: String,
     model: Option<String>,
     cwd: Option<String>,
+    attachments: Option<Vec<AttachmentInput>>,
 ) -> Result<serde_json::Value, String> {
+    let loaded_attachments = match attachments {
+        Some(paths) if !paths.is_empty() => load_attachments(&paths)?,
+        _ => Vec::new(),
+    };
     // The session-scoped send_message: look up (or fail closed for) a
     // specific session's agent. Two windows hitting two different
     // sessions can now run their tool rounds in parallel because each
@@ -519,7 +596,7 @@ async fn send_message_in_session(
         (None, s)            => s.map(|s| s.to_string()),
     };
     let response = agent
-        .send_message(&message, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
+        .send_message_with_attachments(&message, loaded_attachments, profile_context.as_deref(), &memories, &learned, Some(&selected_model), Some(progress_tx), combined_soul.as_deref(), &allowed_tools, &blocked_tools)
         .await;
 
     progress_task.abort();
@@ -712,6 +789,31 @@ async fn memory_remove(state: State<'_, AppState>, id: String) -> Result<bool, S
 #[tauri::command]
 async fn memory_stats(state: State<'_, AppState>) -> Result<memory::db::MemoryStats, String> {
     state.memory.memory_stats()
+}
+
+#[tauri::command]
+async fn memory_list(
+    state: State<'_, AppState>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+) -> Result<Vec<memory::db::MemoryRecord>, String> {
+    state.memory.list_memories(limit.unwrap_or(50), offset.unwrap_or(0))
+}
+
+#[tauri::command]
+async fn memory_observations(
+    state: State<'_, AppState>,
+    limit: Option<i32>,
+) -> Result<Vec<memory::db::ObservationRecord>, String> {
+    state.memory.list_observations(limit.unwrap_or(50))
+}
+
+#[tauri::command]
+async fn memory_learned(
+    state: State<'_, AppState>,
+    limit: Option<i32>,
+) -> Result<Vec<memory::db::LearnedRecord>, String> {
+    state.memory.list_learned_detailed(limit.unwrap_or(50))
 }
 
 #[tauri::command]
@@ -1090,7 +1192,7 @@ async fn save_config(
         state.plugins.clone(),
         state.mcp.clone(),
     ));
-    let new_agent = init_agent(&new_config, tool_registry.clone());
+    let new_agent = init_agent(&new_config, tool_registry.clone(), state.approval_gate.clone());
 
     // Refresh the registry shared by every parallel agent.
     {
@@ -1125,7 +1227,7 @@ async fn save_config(
         let registry = state.tool_registry.read()
             .map_err(|e| format!("Registry lock: {}", e))?
             .clone();
-        let mut rebuilt = init_agent(&new_config, registry);
+        let mut rebuilt = init_agent(&new_config, registry, state.approval_gate.clone());
         if let Ok(Some(rec)) = state.session_store.get(&sid) {
             if let Some(jsonl) = rec.messages.as_deref() {
                 if let Some(a) = rebuilt.as_mut() {
@@ -1439,7 +1541,7 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
                     state.mcp.clone(),
                 )));
 
-            if let Some(mut sub_agent) = init_agent(&cfg_snapshot, tool_registry) {
+            if let Some(mut sub_agent) = init_agent(&cfg_snapshot, tool_registry, state.approval_gate.clone()) {
                 let soul = agent::soul::load_soul();
                 match sub_agent.send_message(&prompt, None, &[], &[], None, None, soul.as_deref(), &[], &[]).await {
                     Ok(response) => {
@@ -1572,7 +1674,11 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
     }
 }
 
-fn init_agent(config: &Config, tool_registry: Arc<ToolRegistry>) -> Option<AgentLoop> {
+fn init_agent(
+    config: &Config,
+    tool_registry: Arc<ToolRegistry>,
+    approval_gate: Arc<tools::approval::ApprovalGate>,
+) -> Option<AgentLoop> {
     let max_tokens = config.agent.max_tokens;
     let provider: Box<dyn provider::Provider> = if let Some(openai_cfg) = &config.providers.openai {
         Box::new(OpenAIProvider {
@@ -1622,7 +1728,7 @@ fn init_agent(config: &Config, tool_registry: Arc<ToolRegistry>) -> Option<Agent
         return None;
     };
 
-    Some(AgentLoop::new(config.clone(), provider, tool_registry))
+    Some(AgentLoop::new(config.clone(), provider, tool_registry, approval_gate))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1793,7 +1899,8 @@ pub fn run() {
         mcp_hub.clone(),
     );
     let tool_registry = Arc::new(tool_registry);
-    let agent = init_agent(&config, tool_registry.clone());
+    let approval_gate = tools::approval::ApprovalGate::new();
+    let agent = init_agent(&config, tool_registry.clone(), approval_gate.clone());
 
     // Wire the outbound notification feed (Telegram, future channels).
     // Idempotent — save_config calls init() again with the new config.
@@ -1893,8 +2000,10 @@ pub fn run() {
             mnemonics: mnemonics_client,
             plugins: plugin_registry,
             mcp: mcp_hub,
+            approval_gate,
         })
         .invoke_handler(tauri::generate_handler![
+            tool_approval_response,
             send_message,
             send_message_in_session,
             get_config,
@@ -1903,6 +2012,9 @@ pub fn run() {
             memory_search,
             memory_remove,
             memory_stats,
+            memory_list,
+            memory_observations,
+            memory_learned,
             session_list,
             session_current,
             session_create,
@@ -2015,8 +2127,8 @@ mod tests {
     #[test]
     fn serialize_deserialize_round_trip() {
         let msgs = vec![
-            Message { role: "system".into(), content: "sys prompt".into(), tool_calls: None, tool_call_id: None, reasoning: None },
-            Message { role: "user".into(), content: "hello".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "system".into(), content: "sys prompt".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
+            Message { role: "user".into(), content: "hello".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
         ];
         let jsonl = serialize_conversation(&msgs);
         assert!(jsonl.contains("sys prompt"));
@@ -2168,7 +2280,7 @@ mod tests {
             config.stt.clone(), config.tts.clone(), config.tools.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
         );
 
-        let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
+        let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry), tools::approval::ApprovalGate::new());
         let result = agent
             .send_message("Analyze this code for bugs", None, &[], &[], None, None, None, &[], &[])
             .await;
@@ -2257,7 +2369,7 @@ mod tests {
                 config.stt.clone(), config.tts.clone(), config.tools.clone(), store.clone(), Arc::new(WhatsappBridge::new()), None, Arc::new(plugin::PluginRegistry::new().unwrap()), Arc::new(mcp::McpHub::new()),
             );
 
-            let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry));
+            let mut agent = AgentLoop::new(config, Box::new(mock), Arc::new(tool_registry), tools::approval::ApprovalGate::new());
             let prompt = task.prompt.clone().unwrap_or_default();
             let result = agent.send_message(&prompt, None, &[], &[], None, None, None, &[], &[]).await.unwrap();
 

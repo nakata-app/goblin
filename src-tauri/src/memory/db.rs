@@ -469,6 +469,91 @@ impl MemoryDb {
         Ok(affected > 0)
     }
 
+    pub fn list_memories(&self, limit: i32, offset: i32) -> Result<Vec<MemoryRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, ns, tier, text, meta, created, last_accessed, access_count
+             FROM memories
+             ORDER BY last_accessed DESC, created DESC
+             LIMIT ?1 OFFSET ?2"
+        ).map_err(|e| format!("Prepare error: {}", e))?;
+
+        let rows = stmt.query_map(params![limit, offset], |row| {
+            Ok(MemoryRecord {
+                id: row.get(0)?,
+                ns: row.get(1)?,
+                tier: row.get(2)?,
+                text: row.get(3)?,
+                meta: row.get(4)?,
+                created: row.get(5)?,
+                last_accessed: row.get(6)?,
+                access_count: row.get(7)?,
+            })
+        }).map_err(|e| format!("Query error: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    pub fn list_observations(&self, limit: i32) -> Result<Vec<ObservationRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, session_id, tool_name, args_summary, result_summary, success
+             FROM observations
+             ORDER BY ts DESC
+             LIMIT ?1"
+        ).map_err(|e| format!("Prepare error: {}", e))?;
+
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(ObservationRecord {
+                id: row.get(0)?,
+                ts: row.get(1)?,
+                session_id: row.get(2)?,
+                tool_name: row.get(3)?,
+                args_summary: row.get(4)?,
+                result_summary: row.get(5)?,
+                success: row.get::<_, i32>(6)? != 0,
+            })
+        }).map_err(|e| format!("Query error: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    pub fn list_learned_detailed(&self, limit: i32) -> Result<Vec<LearnedRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, preference, reinforcement_count, last_seen
+             FROM learned
+             ORDER BY reinforcement_count DESC, last_seen DESC
+             LIMIT ?1"
+        ).map_err(|e| format!("Prepare error: {}", e))?;
+
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(LearnedRecord {
+                id: row.get(0)?,
+                preference: row.get(1)?,
+                reinforcement_count: row.get(2)?,
+                last_seen: row.get(3)?,
+            })
+        }).map_err(|e| format!("Query error: {}", e))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {}", e))?);
+        }
+        Ok(results)
+    }
+
     pub fn memory_stats(&self) -> Result<MemoryStats, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
@@ -582,6 +667,25 @@ pub struct MemoryRecord {
 pub struct MemoryStats {
     pub total: i32,
     pub by_ns: Vec<(String, i32)>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ObservationRecord {
+    pub id: String,
+    pub ts: i64,
+    pub session_id: String,
+    pub tool_name: String,
+    pub args_summary: Option<String>,
+    pub result_summary: Option<String>,
+    pub success: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LearnedRecord {
+    pub id: String,
+    pub preference: String,
+    pub reinforcement_count: i32,
+    pub last_seen: i64,
 }
 
 fn current_timestamp() -> i64 {

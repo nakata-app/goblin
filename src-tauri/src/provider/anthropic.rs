@@ -35,6 +35,18 @@ enum AnthropicContent<'a> {
         tool_use_id: &'a str,
         content: &'a str,
     },
+    Image {
+        #[serde(rename = "type")] content_type: &'a str,
+        source: AnthropicImageSource<'a>,
+    },
+}
+
+#[derive(Serialize)]
+struct AnthropicImageSource<'a> {
+    #[serde(rename = "type")]
+    source_type: &'a str, // always "base64"
+    media_type: &'a str,
+    data: &'a str,
 }
 
 #[derive(Serialize)]
@@ -76,6 +88,39 @@ struct AnthropicUsage {
     output_tokens: u32,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_image_content_serializes_to_source_block() {
+        let img = AnthropicContent::Image {
+            content_type: "image",
+            source: AnthropicImageSource {
+                source_type: "base64",
+                media_type: "image/png",
+                data: "ZmFrZQ==",
+            },
+        };
+        let v = serde_json::to_value(&img).unwrap();
+        assert_eq!(v["type"], "image");
+        assert_eq!(v["source"]["type"], "base64");
+        assert_eq!(v["source"]["media_type"], "image/png");
+        assert_eq!(v["source"]["data"], "ZmFrZQ==");
+    }
+
+    #[test]
+    fn anthropic_text_content_serializes_flat() {
+        let txt = AnthropicContent::Text {
+            content_type: "text",
+            text: "hello",
+        };
+        let v = serde_json::to_value(&txt).unwrap();
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["text"], "hello");
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for AnthropicProvider {
     async fn chat(
@@ -107,10 +152,22 @@ impl Provider for AnthropicProvider {
                     content: &msg.content,
                 });
             } else {
-                content.push(AnthropicContent::Text {
-                    content_type: "text",
-                    text: &msg.content,
-                });
+                if !msg.content.is_empty() {
+                    content.push(AnthropicContent::Text {
+                        content_type: "text",
+                        text: &msg.content,
+                    });
+                }
+                for att in &msg.attachments {
+                    content.push(AnthropicContent::Image {
+                        content_type: "image",
+                        source: AnthropicImageSource {
+                            source_type: "base64",
+                            media_type: &att.mime_type,
+                            data: &att.data,
+                        },
+                    });
+                }
             }
 
             anthropic_msgs.push(AnthropicMessage {
@@ -241,10 +298,22 @@ impl Provider for AnthropicProvider {
                     content: &msg.content,
                 });
             } else {
-                content.push(AnthropicContent::Text {
-                    content_type: "text",
-                    text: &msg.content,
-                });
+                if !msg.content.is_empty() {
+                    content.push(AnthropicContent::Text {
+                        content_type: "text",
+                        text: &msg.content,
+                    });
+                }
+                for att in &msg.attachments {
+                    content.push(AnthropicContent::Image {
+                        content_type: "image",
+                        source: AnthropicImageSource {
+                            source_type: "base64",
+                            media_type: &att.mime_type,
+                            data: &att.data,
+                        },
+                    });
+                }
             }
 
             anthropic_msgs.push(AnthropicMessage {

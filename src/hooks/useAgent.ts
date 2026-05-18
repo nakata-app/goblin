@@ -36,7 +36,7 @@ interface ProgressPayload {
   round?: number;
   max?: number;
   tool?: string;
-  args?: string;
+  args?: string | unknown;
   success?: boolean;
   summary?: string;
   model?: string;
@@ -46,6 +46,8 @@ interface ProgressPayload {
   has_tool_calls?: boolean;
   chunk?: string;
   session_id?: string;
+  // tool_approval_request payload
+  id?: string;
 }
 
 const TOOL_EVENT_MAP: Record<string, string> = {
@@ -237,6 +239,20 @@ export function useAgent() {
               has_reasoning: !!(p.reasoning),
             });
             break;
+          case 'tool_approval_request': {
+            // Park the pending approval in the agent store; the
+            // ApprovalModal component reads it and calls
+            // tool_approval_response to resume the Rust waiter.
+            if (p.id && p.tool) {
+              useAgentStore.getState().setPendingApproval({
+                id: p.id,
+                tool: p.tool,
+                args: p.args,
+                requestedAt: Date.now(),
+              });
+            }
+            break;
+          }
         }
       });
 
@@ -245,18 +261,30 @@ export function useAgent() {
         // session id (multi-tab path); fall back to the legacy global
         // command for cold boots where activeSessionId is still null.
         const cwd = useProjectStore.getState().cwd;
+        // Drain any pending image attachments queued via InputBar drop /
+        // paperclip picker. Rust validates mime + size before accepting.
+        const pending = useChatStore.getState().pendingAttachments;
+        const attachments = pending.length
+          ? pending.map((p) => ({ mime_type: p.mime_type, data: p.data }))
+          : null;
         const response = sendSessionId
           ? await invoke<AgentResponse>('send_message_in_session', {
               sessionId: sendSessionId,
               message: text,
               model: model === 'auto' ? null : model,
               cwd,
+              attachments,
             })
           : await invoke<AgentResponse>('send_message', {
               message: text,
               model: model === 'auto' ? null : model,
               cwd,
+              attachments,
             });
+
+        // Clear the queue regardless of success — the same images going
+        // out twice is almost never what the user wanted.
+        useChatStore.getState().clearPendingAttachments();
 
         progressUnlisten();
 

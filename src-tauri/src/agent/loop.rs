@@ -1,10 +1,12 @@
 use crate::config::Config;
 use crate::provider::{Message, Provider, ToolDefinition};
 use crate::tools::ToolRegistry;
+use crate::tools::approval::{self, ApprovalGate};
 use super::prompt;
 use super::context::ContextWindow;
 use std::collections::HashMap;
 use std::cell::Cell;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub struct AgentLoop {
@@ -16,6 +18,9 @@ pub struct AgentLoop {
     // one registry per Goblin install, many parallel sessions can hold
     // their own conversation while dispatching into the same tools.
     pub tool_registry: std::sync::Arc<ToolRegistry>,
+    // Shared approval gate. One instance for the whole app — every
+    // session asks for approval through the same modal queue.
+    pub approval_gate: Arc<ApprovalGate>,
     pub max_tool_rounds: u32,
 }
 
@@ -105,7 +110,12 @@ impl LoopGuard {
 }
 
 impl AgentLoop {
-    pub fn new(config: Config, provider: Box<dyn Provider>, tool_registry: std::sync::Arc<ToolRegistry>) -> Self {
+    pub fn new(
+        config: Config,
+        provider: Box<dyn Provider>,
+        tool_registry: std::sync::Arc<ToolRegistry>,
+        approval_gate: Arc<ApprovalGate>,
+    ) -> Self {
         let max_tokens = config.agent.max_tokens;
         let cw = ContextWindow::with_config(
             max_tokens,
@@ -119,6 +129,7 @@ impl AgentLoop {
             conversation: Vec::new(),
             context_window: cw,
             tool_registry,
+            approval_gate,
             max_tool_rounds: 10,
         }
     }
@@ -140,8 +151,35 @@ impl AgentLoop {
         allowed_tools: &[String],
         blocked_tools: &[String],
     ) -> Result<AgentResponse, String> {
+        self.send_message_with_attachments(
+            user_input,
+            vec![],
+            project_context,
+            memories,
+            learned,
+            model_override,
+            progress,
+            soul,
+            allowed_tools,
+            blocked_tools,
+        ).await
+    }
+
+    pub async fn send_message_with_attachments(
+        &mut self,
+        user_input: &str,
+        attachments: Vec<crate::provider::Attachment>,
+        project_context: Option<&str>,
+        memories: &[String],
+        learned: &[String],
+        model_override: Option<&str>,
+        progress: Option<mpsc::UnboundedSender<serde_json::Value>>,
+        soul: Option<&str>,
+        allowed_tools: &[String],
+        blocked_tools: &[String],
+    ) -> Result<AgentResponse, String> {
         let system_prompt = prompt::build_system_prompt(project_context, memories, learned, soul);
-        let mut messages = prompt::build_messages(&system_prompt, &self.conversation, user_input);
+        let mut messages = prompt::build_messages_with_attachments(&system_prompt, &self.conversation, user_input, attachments);
         let pre_loop_len = messages.len();
 
         let model = model_override.unwrap_or(self.config.default_model());
@@ -280,6 +318,7 @@ impl AgentLoop {
                 tool_calls: Some(tool_calls.clone()),
                 tool_call_id: None,
                 reasoning,
+                attachments: vec![],
             });
 
             for tc in tool_calls {
@@ -294,10 +333,25 @@ impl AgentLoop {
                     }));
                 }
 
-                let tool_result = self
-                    .tool_registry
-                    .execute(&tc.function.name, args)
-                    .await;
+                // Pre-dispatch approval gate. Dangerous tools (bash,
+                // write_file, sandbox_exec, …) must clear the modal
+                // first. `auto_approve = true` in config bypasses the
+                // gate, intended for cron / fully-headless runs.
+                let tool_result = if approval::needs_approval(&tc.function.name)
+                    && !self.config.tools.auto_approve
+                {
+                    match approval::request_approval(
+                        &self.approval_gate,
+                        &progress,
+                        &tc.function.name,
+                        &args,
+                    ).await {
+                        Ok(()) => self.tool_registry.execute(&tc.function.name, args).await,
+                        Err(reason) => Err(reason),
+                    }
+                } else {
+                    self.tool_registry.execute(&tc.function.name, args).await
+                };
 
                 let result_text = match tool_result {
                     Ok(output) => crate::tools::compactor::compact(&tc.function.name, &output),
@@ -363,6 +417,7 @@ impl AgentLoop {
                         tool_calls: None,
                         tool_call_id: Some(tc.id.clone()),
                         reasoning: None,
+            attachments: vec![],
                     });
                     guard_triggered = true;
                     break;
@@ -383,6 +438,7 @@ impl AgentLoop {
                     tool_calls: None,
                     tool_call_id: Some(tc.id.clone()),
                     reasoning: None,
+            attachments: vec![],
                 });
             }
 
@@ -414,6 +470,7 @@ impl AgentLoop {
             tool_calls: None,
             tool_call_id: None,
             reasoning: None,
+            attachments: vec![],
         });
 
         // Copy all intermediate loop messages (assistant tool_calls + tool results)
@@ -428,6 +485,7 @@ impl AgentLoop {
             tool_calls: None,
             tool_call_id: None,
             reasoning: None,
+            attachments: vec![],
         });
 
         self.context_window.trim(&mut self.conversation);

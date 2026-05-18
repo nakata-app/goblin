@@ -1,5 +1,7 @@
 use super::{Message, Provider, ProviderResponse, ToolDefinition};
+use super::openai::to_openai_messages;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub struct NvidiaProvider {
     pub api_key: String,
@@ -10,7 +12,7 @@ pub struct NvidiaProvider {
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,7 +58,7 @@ impl Provider for NvidiaProvider {
 
         let request_body = ChatRequest {
             model,
-            messages,
+            messages: to_openai_messages(messages),
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: false,
@@ -118,7 +120,7 @@ impl Provider for NvidiaProvider {
 
         let request_body = ChatRequest {
             model,
-            messages,
+            messages: to_openai_messages(messages),
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: true,

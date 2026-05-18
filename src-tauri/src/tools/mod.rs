@@ -20,6 +20,7 @@ pub mod skills;
 pub mod peer;
 pub mod compactor;
 pub mod sandbox;
+pub mod approval;
 
 use crate::config::SttConfig;
 use crate::config::ToolsConfig;

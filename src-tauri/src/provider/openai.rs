@@ -1,5 +1,6 @@
 use super::{Message, Provider, ProviderResponse, ToolDefinition, ToolCall};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use futures_util::StreamExt;
 
 pub struct OpenAIProvider {
@@ -8,10 +9,59 @@ pub struct OpenAIProvider {
     pub max_tokens: u32,
 }
 
+/// Convert one `Message` into the OpenAI Chat Completions wire shape.
+/// When there are no attachments this is the boring `{ role, content }`
+/// object that every existing call site already produces. With image
+/// attachments the content morphs into the multimodal array form:
+///   content: [
+///     { "type": "text", "text": "..." },
+///     { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+///   ]
+/// NVIDIA NIM and ZhipuAI GLM accept the same shape, so nvidia.rs and
+/// glm.rs reuse this helper instead of duplicating the logic.
+pub(crate) fn to_openai_message(msg: &Message) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".to_string(), json!(msg.role));
+
+    if msg.has_images() {
+        let mut parts: Vec<Value> = Vec::with_capacity(msg.attachments.len() + 1);
+        if !msg.content.is_empty() {
+            parts.push(json!({ "type": "text", "text": msg.content }));
+        }
+        for att in &msg.attachments {
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:{};base64,{}", att.mime_type, att.data),
+                },
+            }));
+        }
+        obj.insert("content".to_string(), Value::Array(parts));
+    } else {
+        obj.insert("content".to_string(), json!(msg.content));
+    }
+
+    if let Some(ref tcs) = msg.tool_calls {
+        obj.insert("tool_calls".to_string(), serde_json::to_value(tcs).unwrap_or(Value::Null));
+    }
+    if let Some(ref id) = msg.tool_call_id {
+        obj.insert("tool_call_id".to_string(), json!(id));
+    }
+    if let Some(ref r) = msg.reasoning {
+        obj.insert("reasoning_content".to_string(), json!(r));
+    }
+
+    Value::Object(obj)
+}
+
+pub(crate) fn to_openai_messages(msgs: &[Message]) -> Vec<Value> {
+    msgs.iter().map(to_openai_message).collect()
+}
+
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +131,71 @@ struct StreamDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::Attachment;
     use crate::config::Config;
+
+    fn user_msg(text: &str, atts: Vec<Attachment>) -> Message {
+        Message {
+            role: "user".into(),
+            content: text.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            attachments: atts,
+        }
+    }
+
+    #[test]
+    fn openai_message_text_only_stays_string_content() {
+        let msg = user_msg("hello", vec![]);
+        let v = to_openai_message(&msg);
+        assert_eq!(v["role"], "user");
+        assert_eq!(v["content"], "hello");
+        assert!(v["content"].is_string());
+    }
+
+    #[test]
+    fn openai_message_with_image_becomes_array_content() {
+        let att = Attachment {
+            mime_type: "image/png".into(),
+            data: "ZmFrZQ==".into(),
+        };
+        let msg = user_msg("describe this", vec![att]);
+        let v = to_openai_message(&msg);
+        assert!(v["content"].is_array());
+        let parts = v["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "describe this");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,ZmFrZQ==");
+    }
+
+    #[test]
+    fn openai_message_image_without_text_skips_text_block() {
+        let att = Attachment {
+            mime_type: "image/jpeg".into(),
+            data: "Zm9v".into(),
+        };
+        let msg = user_msg("", vec![att]);
+        let v = to_openai_message(&msg);
+        let parts = v["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    #[test]
+    fn openai_message_multiple_images() {
+        let atts = vec![
+            Attachment { mime_type: "image/png".into(), data: "AAAA".into() },
+            Attachment { mime_type: "image/webp".into(), data: "BBBB".into() },
+        ];
+        let msg = user_msg("compare", atts);
+        let v = to_openai_message(&msg);
+        let parts = v["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[2]["image_url"]["url"], "data:image/webp;base64,BBBB");
+    }
 
     #[tokio::test]
     #[ignore = "requires network + ~/.goblin/config.toml with [providers.openai]"]
@@ -103,6 +217,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning: None,
+            attachments: vec![],
             },
         ];
 
@@ -145,6 +260,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning: None,
+            attachments: vec![],
             },
         ];
 
@@ -178,7 +294,7 @@ impl Provider for OpenAIProvider {
 
         let request_body = ChatRequest {
             model,
-            messages,
+            messages: to_openai_messages(messages),
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: false,
@@ -259,7 +375,7 @@ impl Provider for OpenAIProvider {
 
         let request_body = ChatRequest {
             model,
-            messages,
+            messages: to_openai_messages(messages),
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: if tools.is_empty() { None } else { Some("auto") },
             stream: true,

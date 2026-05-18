@@ -68,6 +68,7 @@ impl ContextWindow {
                             tool_calls: None,
                             tool_call_id: None,
                             reasoning: None,
+            attachments: vec![],
                         };
                         // Remove the middle section
                         messages.drain(1..cut_end);
@@ -121,7 +122,7 @@ mod tests {
     use crate::provider::Message;
 
     fn msg(content: &str) -> Message {
-        Message { role: "user".to_string(), content: content.to_string(), tool_calls: None, tool_call_id: None, reasoning: None }
+        Message { role: "user".to_string(), content: content.to_string(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] }
     }
 
     #[test]
@@ -171,7 +172,7 @@ mod tests {
     fn trim_keeps_system_message() {
         let cw = ContextWindow::new(50);
         let mut msgs = vec![
-            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
             msg("xxxxx yyyyy zzzzz aaaaa bbbbb ccccc ddddd eeeee fffff ggggg"),
         ];
         cw.trim(&mut msgs);
@@ -184,12 +185,12 @@ mod tests {
         let cw = ContextWindow::new(10); // very low limit to force trim
         let big = "x".repeat(200);
         let mut msgs = vec![
-            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
         ];
         // Add many pairs to exceed limit
         for _ in 0..30 {
-            msgs.push(Message { role: "user".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None });
-            msgs.push(Message { role: "assistant".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None });
+            msgs.push(Message { role: "user".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] });
+            msgs.push(Message { role: "assistant".into(), content: big.clone(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] });
         }
         cw.trim(&mut msgs);
         // Should have system + some remaining messages
@@ -204,7 +205,7 @@ mod tests {
         cw_limit.hard_message_limit = 10;
         cw_limit.protect_last_n = 3;
         let mut msgs = vec![
-            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "system".into(), content: "sys".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
         ];
         for i in 0..20 {
             msgs.push(msg(&format!("msg{}", i)));

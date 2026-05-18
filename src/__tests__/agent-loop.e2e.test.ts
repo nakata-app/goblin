@@ -74,6 +74,8 @@ describe('agent loop - sendMessage', () => {
     expect(mockInvoke).toHaveBeenCalledWith('send_message', {
       message: 'test',
       model: 'deepseek-v4-pro',
+      attachments: null,
+      cwd: null,
     });
   });
 

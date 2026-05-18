@@ -452,6 +452,12 @@ pub struct ToolsConfig {
     /// what the allowlist says.
     #[serde(default)]
     pub shell_blocklist: Vec<String>,
+    /// When true, dangerous tools (bash, write_file, edit_file,
+    /// multi_edit, sandbox_exec, git_commit, peer_send, whatsapp_send,
+    /// etc.) bypass the user-approval modal. Defaults to false so the
+    /// modal is on by default. Set true for fully headless / cron runs.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

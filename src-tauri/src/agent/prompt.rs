@@ -76,6 +76,15 @@ pub fn build_messages(
     conversation: &[Message],
     new_user_message: &str,
 ) -> Vec<Message> {
+    build_messages_with_attachments(system_prompt, conversation, new_user_message, vec![])
+}
+
+pub fn build_messages_with_attachments(
+    system_prompt: &str,
+    conversation: &[Message],
+    new_user_message: &str,
+    attachments: Vec<crate::provider::Attachment>,
+) -> Vec<Message> {
     let mut messages = Vec::with_capacity(conversation.len() + 2);
 
     messages.push(Message {
@@ -84,6 +93,7 @@ pub fn build_messages(
         tool_calls: None,
         tool_call_id: None,
         reasoning: None,
+        attachments: vec![],
     });
 
     messages.extend(conversation.iter().cloned());
@@ -94,6 +104,7 @@ pub fn build_messages(
         tool_calls: None,
         tool_call_id: None,
         reasoning: None,
+        attachments,
     });
 
     messages
@@ -168,7 +179,7 @@ mod tests {
     #[test]
     fn build_messages_structure() {
         let existing = vec![
-            Message { role: "user".into(), content: "previous".into(), tool_calls: None, tool_call_id: None, reasoning: None },
+            Message { role: "user".into(), content: "previous".into(), tool_calls: None, tool_call_id: None, reasoning: None, attachments: vec![] },
         ];
         let result = build_messages("sys-prompt", &existing, "new message");
         assert_eq!(result.len(), 3);

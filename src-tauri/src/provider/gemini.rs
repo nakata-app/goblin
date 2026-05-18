@@ -29,12 +29,21 @@ struct GeminiContent<'a> {
 #[serde(untagged)]
 enum GeminiPart<'a> {
     Text { text: &'a str },
+    InlineData {
+        inline_data: GeminiInlineData<'a>,
+    },
     FunctionCall {
         function_call: GeminiFunctionCall,
     },
     FunctionResponse {
         function_response: GeminiFunctionResponse<'a>,
     },
+}
+
+#[derive(Serialize)]
+struct GeminiInlineData<'a> {
+    mime_type: &'a str,
+    data: &'a str,
 }
 
 #[derive(Serialize)]
@@ -129,6 +138,31 @@ struct GeminiUsage {
     candidates_token_count: u32,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_inline_data_part_serializes() {
+        let part = GeminiPart::InlineData {
+            inline_data: GeminiInlineData {
+                mime_type: "image/jpeg",
+                data: "Zm9v",
+            },
+        };
+        let v = serde_json::to_value(&part).unwrap();
+        assert_eq!(v["inline_data"]["mime_type"], "image/jpeg");
+        assert_eq!(v["inline_data"]["data"], "Zm9v");
+    }
+
+    #[test]
+    fn gemini_text_part_serializes() {
+        let part = GeminiPart::Text { text: "hi" };
+        let v = serde_json::to_value(&part).unwrap();
+        assert_eq!(v["text"], "hi");
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for GeminiProvider {
     async fn chat(
@@ -188,9 +222,19 @@ impl Provider for GeminiProvider {
                     })
                     .collect()
             } else {
-                vec![GeminiPart::Text {
-                    text: &msg.content,
-                }]
+                let mut parts: Vec<GeminiPart> = Vec::new();
+                if !msg.content.is_empty() {
+                    parts.push(GeminiPart::Text { text: &msg.content });
+                }
+                for att in &msg.attachments {
+                    parts.push(GeminiPart::InlineData {
+                        inline_data: GeminiInlineData {
+                            mime_type: &att.mime_type,
+                            data: &att.data,
+                        },
+                    });
+                }
+                parts
             };
 
             contents.push(GeminiContent { role, parts });

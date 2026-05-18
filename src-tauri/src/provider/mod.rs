@@ -17,6 +17,31 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "reasoning_content")]
     pub reasoning: Option<String>,
+    /// Image attachments piggy-backed on this turn. Empty 99% of the
+    /// time; populated when the user drag-drops images into InputBar.
+    /// Provider serializers translate these into the right multimodal
+    /// content block format (OpenAI image_url, Anthropic source block,
+    /// Gemini inline_data).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A base64-encoded image attachment. We carry only image attachments
+/// for now — text files are pre-pasted into the message content, audio
+/// is out of scope until any provider standardises it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    /// `image/png`, `image/jpeg`, `image/webp`, `image/gif`. Lower-case.
+    pub mime_type: String,
+    /// Raw base64 body (no `data:` prefix). Each provider adds the
+    /// prefix shape it needs.
+    pub data: String,
+}
+
+impl Message {
+    pub fn has_images(&self) -> bool {
+        !self.attachments.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

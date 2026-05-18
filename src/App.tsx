@@ -9,6 +9,7 @@ import { useAgent } from './hooks/useAgent';
 import { useGoblinState } from './hooks/useGoblinState';
 import { useProjectStore } from './stores/projectStore';
 import { ProjectPicker } from './components/ProjectPicker';
+import { ApprovalModal } from './components/ApprovalModal';
 import { ChatPanel } from './components/ChatPanel';
 import { GoblinCharacter } from './components/GoblinCharacter';
 import { GoblinLive } from './components/GoblinLive';
@@ -20,6 +21,8 @@ import { ConfigPanel } from './components/ConfigPanel';
 import { Sidebar } from './components/Sidebar';
 import { SessionPicker } from './components/SessionPicker';
 import { WhatsappPanel } from './components/WhatsappPanel';
+import { MemoryPanel } from './components/MemoryPanel';
+import { useMemoryStore } from './stores/memoryStore';
 import { TabBar } from './components/TabBar';
 import type { GoblinState } from './types';
 import './styles/app.css';
@@ -491,6 +494,11 @@ function App() {
         e.preventDefault();
         setShortcutsOpen((v) => !v);
       }
+      if (mod && e.key === 'm') {
+        e.preventDefault();
+        const { open, setOpen } = useMemoryStore.getState();
+        setOpen(!open);
+      }
       // ⌘1-9 — switch to tab N (1-indexed)
       if (mod && /^[1-9]$/.test(e.key)) {
         const idx = parseInt(e.key, 10) - 1;
@@ -524,6 +532,8 @@ function App() {
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
       />
+
+      <ApprovalModal />
 
       {cmdOpen && <CommandPalette onCommand={handleCommand} onClose={() => setCmdOpen(false)} />}
 
@@ -566,6 +576,7 @@ function App() {
               <div className="shortcuts-row"><kbd>⌘N</kbd><span>New session</span></div>
               <div className="shortcuts-row"><kbd>⌘⇧S</kbd><span>Sessions sidebar</span></div>
               <div className="shortcuts-row"><kbd>⌘/</kbd><span>This cheat sheet</span></div>
+              <div className="shortcuts-row"><kbd>⌘M</kbd><span>Memory panel</span></div>
               <div className="shortcuts-row"><kbd>⌘1</kbd>–<kbd>9</kbd><span>Switch to tab N</span></div>
               <div className="shortcuts-row"><kbd>/</kbd><span>Open palette (empty input)</span></div>
               <div className="shortcuts-row"><kbd>Enter</kbd><span>Send message</span></div>
@@ -585,6 +596,8 @@ function App() {
         isOpen={whatsappOpen}
         onToggle={() => setWhatsappOpen(false)}
       />
+
+      <MemoryPanel />
 
       {showSessionPicker && (
         <SessionPicker
@@ -645,6 +658,9 @@ function App() {
             <button className="header-icon-btn" onClick={() => setWhatsappOpen(true)} title="WhatsApp">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
             </button>
+            <button className="header-icon-btn" onClick={() => useMemoryStore.getState().setOpen(true)} title="Memory (⌘M)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M12 7v5l3 3"/></svg>
+            </button>
             <button className="header-icon-btn" onClick={() => setConfigOpen(true)} title="Settings">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
@@ -673,6 +689,29 @@ function App() {
           onSend={handleSend}
           onOpenPalette={() => setCmdOpen(true)}
           onFileAttach={(file) => {
+            // Image files become real multimodal payloads (queued on
+            // chatStore, picked up at send time). Non-image files still
+            // get the legacy "filename note in input" fallback so the
+            // model at least knows the user dropped something.
+            const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+            if (allowed.includes(file.type)) {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = typeof reader.result === 'string' ? reader.result : '';
+                const comma = result.indexOf(',');
+                const base64 = comma >= 0 ? result.slice(comma + 1) : '';
+                if (!base64) return;
+                useChatStore.getState().addPendingAttachment({
+                  id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  name: file.name,
+                  mime_type: file.type,
+                  data: base64,
+                  bytes: file.size,
+                });
+              };
+              reader.readAsDataURL(file);
+              return;
+            }
             const kb = (file.size / 1024).toFixed(1);
             const note = `📎 ${file.name} (${file.type || 'unknown'}, ${kb} KB)`;
             const cur = useChatStore.getState().input;

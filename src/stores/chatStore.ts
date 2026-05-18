@@ -25,6 +25,15 @@ export interface DecisionEntry {
   tools_chosen: string[];
 }
 
+export interface PendingAttachment {
+  id: string;
+  name: string;
+  mime_type: string;
+  /// Base64-encoded body without `data:` prefix. Rust adds the prefix.
+  data: string;
+  bytes: number;
+}
+
 interface ChatState {
   messages: Message[];
   input: string;
@@ -36,6 +45,7 @@ interface ChatState {
   taskTree: TaskTree[];
   diffContent: string;
   decisions: DecisionEntry[];
+  pendingAttachments: PendingAttachment[];
 
   setInput: (input: string) => void;
   addMessage: (msg: Message) => void;
@@ -58,6 +68,9 @@ interface ChatState {
   setDiff: (content: string) => void;
   addDecision: (d: DecisionEntry) => void;
   clearDecisions: () => void;
+  addPendingAttachment: (a: PendingAttachment) => void;
+  removePendingAttachment: (id: string) => void;
+  clearPendingAttachments: () => void;
 }
 
 function isTauri(): boolean {
@@ -92,6 +105,7 @@ export const useChatStore = create<ChatState>((set) => ({
   taskTree: [] as TaskTree[],
   diffContent: '',
   decisions: [],
+  pendingAttachments: [],
 
   setInput: (input) => set({ input }),
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
@@ -155,4 +169,9 @@ export const useChatStore = create<ChatState>((set) => ({
   setDiff: (content) => set({ diffContent: content }),
   addDecision: (d) => set((s) => ({ decisions: [...s.decisions, d] })),
   clearDecisions: () => set({ decisions: [] }),
+  addPendingAttachment: (a) =>
+    set((s) => ({ pendingAttachments: [...s.pendingAttachments, a] })),
+  removePendingAttachment: (id) =>
+    set((s) => ({ pendingAttachments: s.pendingAttachments.filter((x) => x.id !== id) })),
+  clearPendingAttachments: () => set({ pendingAttachments: [] }),
 }));

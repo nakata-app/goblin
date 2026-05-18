@@ -1,6 +1,13 @@
 import { create } from 'zustand';
 import type { GoblinState } from '../types';
 
+export interface PendingApproval {
+  id: string;
+  tool: string;
+  args: unknown;
+  requestedAt: number;
+}
+
 interface AgentState {
   goblinState: GoblinState;
   model: string;
@@ -10,6 +17,7 @@ interface AgentState {
   tokensOut: number;
   activeTool: string | null;
   error: string | null;
+  pendingApproval: PendingApproval | null;
 
   setGoblinState: (s: GoblinState) => void;
   setModel: (m: string) => void;
@@ -18,6 +26,7 @@ interface AgentState {
   addTokens: (input: number, output: number) => void;
   setActiveTool: (t: string | null) => void;
   setError: (e: string | null) => void;
+  setPendingApproval: (p: PendingApproval | null) => void;
   reset: () => void;
 }
 
@@ -30,6 +39,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   tokensOut: 0,
   activeTool: null,
   error: null,
+  pendingApproval: null,
 
   setGoblinState: (s) => set({ goblinState: s }),
   setModel: (m) => set({ model: m }),
@@ -42,6 +52,7 @@ export const useAgentStore = create<AgentState>((set) => ({
     })),
   setActiveTool: (t) => set({ activeTool: t }),
   setError: (e) => set({ error: e }),
+  setPendingApproval: (p) => set({ pendingApproval: p }),
   reset: () =>
     set({
       goblinState: 'idle',
@@ -52,5 +63,6 @@ export const useAgentStore = create<AgentState>((set) => ({
       tokensOut: 0,
       activeTool: null,
       error: null,
+      pendingApproval: null,
     }),
 }));

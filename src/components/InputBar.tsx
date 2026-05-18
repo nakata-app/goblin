@@ -1,4 +1,5 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
+import { useChatStore } from '../stores/chatStore';
 
 interface InputBarProps {
   input: string;
@@ -14,6 +15,8 @@ export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach,
   const fileRef = useRef<HTMLInputElement>(null);
   const [focused, setFocused] = useState(false);
   const [attachedFileName, setAttachedFileName] = useState<string | null>(null);
+  const pendingAttachments = useChatStore((s) => s.pendingAttachments);
+  const removePendingAttachment = useChatStore((s) => s.removePendingAttachment);
 
   const adjustHeight = useCallback(() => {
     const el = inputRef.current;
@@ -71,6 +74,26 @@ export function InputBar({ input, onInputChange, onSend, disabled, onFileAttach,
         <div className="attach-preview">
           <span className="attach-name">{attachedFileName}</span>
           <button className="attach-remove" onClick={() => setAttachedFileName(null)}>×</button>
+        </div>
+      )}
+      {pendingAttachments.length > 0 && (
+        <div className="attach-chips">
+          {pendingAttachments.map((a) => (
+            <div key={a.id} className="attach-chip" title={`${a.mime_type} · ${(a.bytes / 1024).toFixed(1)} KB`}>
+              <img
+                className="attach-chip-thumb"
+                src={`data:${a.mime_type};base64,${a.data}`}
+                alt={a.name}
+              />
+              <span className="attach-chip-name">{a.name}</span>
+              <button
+                type="button"
+                className="attach-chip-remove"
+                onClick={() => removePendingAttachment(a.id)}
+                aria-label={`Remove ${a.name}`}
+              >×</button>
+            </div>
+          ))}
         </div>
       )}
       <div className="input-row">
