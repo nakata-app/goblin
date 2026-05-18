@@ -103,6 +103,66 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
+// Profile picture proxy. Baileys returns a temporary CDN URL; we fetch
+// the bytes once and cache as a data URL for 24h so the frontend can
+// render <img src> without CORS issues. Returns { photo: null } on
+// missing/private profiles so the UI can fall back to initials.
+const PHOTO_TTL_MS = 24 * 60 * 60 * 1000;
+const photoCache = new Map(); // jid -> { dataUrl: string|null, fetchedAt: number }
+app.get("/profile-picture/:jid", async (req, res) => {
+  const jid = req.params.jid;
+  if (!sock || connectionStatus !== "connected") {
+    return res.status(503).json({ error: "not connected" });
+  }
+  const cached = photoCache.get(jid);
+  if (cached && Date.now() - cached.fetchedAt < PHOTO_TTL_MS) {
+    return res.json({ photo: cached.dataUrl });
+  }
+  try {
+    const url = await sock.profilePictureUrl(jid, "image");
+    if (!url) {
+      photoCache.set(jid, { dataUrl: null, fetchedAt: Date.now() });
+      return res.json({ photo: null });
+    }
+    const r = await fetch(url);
+    if (!r.ok) {
+      photoCache.set(jid, { dataUrl: null, fetchedAt: Date.now() });
+      return res.json({ photo: null });
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    const dataUrl = `data:image/jpeg;base64,${buf.toString("base64")}`;
+    photoCache.set(jid, { dataUrl, fetchedAt: Date.now() });
+    res.json({ photo: dataUrl });
+  } catch (_e) {
+    // 404 / private profile / blocked, etc — cache null so we don't retry-loop.
+    photoCache.set(jid, { dataUrl: null, fetchedAt: Date.now() });
+    res.json({ photo: null });
+  }
+});
+
+// Locally-maintained contact name map. Populated from:
+//   1. contacts.upsert / contacts.update Baileys events (saved address-book entries)
+//   2. msg.pushName on every incoming message (sender's "display name on WA")
+// Baileys 7.x does not ship a built-in store, so we keep our own. Falls
+// back to null when no name is known — frontend then shows the JID.
+const contactNames = new Map(); // jid -> name
+
+function setContactName(jid, name) {
+  if (!jid || !name) return;
+  const existing = contactNames.get(jid);
+  // Prefer the first non-null name we learn; do not overwrite a saved
+  // contact name (from contacts.upsert) with a push_name later.
+  if (!existing) contactNames.set(jid, name);
+}
+
+app.get("/contacts", (_req, res) => {
+  const out = [];
+  for (const [jid, name] of contactNames) {
+    out.push({ jid, name });
+  }
+  res.json({ contacts: out });
+});
+
 // Pairing code (8-digit, phone-number based, QR alternative)
 app.post("/pair", async (req, res) => {
   const { phone } = req.body || {};
@@ -192,6 +252,16 @@ async function start() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // ── Contact names: address-book entries from WhatsApp ──
+  const ingestContacts = (list) => {
+    for (const c of list || []) {
+      const name = c?.notify || c?.verifiedName || c?.name;
+      if (c?.id && name) setContactName(c.id, name);
+    }
+  };
+  sock.ev.on("contacts.upsert", ingestContacts);
+  sock.ev.on("contacts.update", ingestContacts);
+
   // ── Incoming messages ──
   sock.ev.on("messages.upsert", (m) => {
     vlog(`[bridge] messages.upsert: ${m.messages.length} message(s), type=${m.type}`);
@@ -200,30 +270,35 @@ async function start() {
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
-      // Skip protocol/system messages (receipts, revocations, etc.)
+      // ── Filter junk message types ──
+      // These never appear as standalone chat items in the WA UI either —
+      // they are protocol artefacts (delivery receipts, reactions on other
+      // messages, system "kept" notifications, sender-key handshakes).
+      const SKIP_TYPES = [
+        "protocolMessage",
+        "messageContextInfo",
+        "senderKeyDistributionMessage",
+        "reactionMessage",
+        "keepInChatMessage",
+        "ephemeralMessage",
+        "pollUpdateMessage",
+      ];
       const keys = Object.keys(msg.message);
-      const SKIP_TYPES = ["protocolMessage", "messageContextInfo", "senderKeyDistributionMessage"];
       if (keys.every((k) => SKIP_TYPES.includes(k))) continue;
 
-      const sender = msg.key.remoteJid || msg.key.participant;
-      let text = "";
-      if (msg.message?.conversation) {
-        text = msg.message.conversation;
-      } else if (msg.message?.extendedTextMessage?.text) {
-        text = msg.message.extendedTextMessage.text;
-      } else if (msg.message?.imageMessage?.caption) {
-        text = `[image] ${msg.message.imageMessage.caption}`;
-      } else if (msg.message?.videoMessage?.caption) {
-        text = `[video] ${msg.message.videoMessage.caption}`;
-      } else {
-        text = `[media: ${keys.filter((k) => !SKIP_TYPES.includes(k)).join(", ")}]`;
-      }
+      // Strip skip-types from the visible key list so the label fallback
+      // ("[media: ...]") never echoes them.
+      const visibleKeys = keys.filter((k) => !SKIP_TYPES.includes(k));
 
+      const sender = msg.key.remoteJid || msg.key.participant;
+      if (msg.pushName) setContactName(sender, msg.pushName);
+      const text = formatMessageText(msg.message, visibleKeys);
       if (!text) continue;
 
       const entry = {
         id: msg.key.id,
         from: sender,
+        push_name: msg.pushName || null,
         text,
         timestamp: msg.messageTimestamp
           ? Number(msg.messageTimestamp) * 1000
@@ -237,6 +312,31 @@ async function start() {
       }
     }
   });
+}
+
+// ── Message-content formatter ──
+// Turn a Baileys message object into a single line of display text. Plain
+// chat → just the text. Media → emoji-prefixed label + optional caption.
+// Unknown types → "📎 Mesaj" so the UI never shows internal struct names.
+function formatMessageText(message, visibleKeys) {
+  if (message?.conversation) return message.conversation;
+  if (message?.extendedTextMessage?.text) return message.extendedTextMessage.text;
+
+  const cap = (m) => (m?.caption ? `: ${m.caption}` : "");
+  if (message?.imageMessage)    return `📷 Foto${cap(message.imageMessage)}`;
+  if (message?.videoMessage)    return `🎥 Video${cap(message.videoMessage)}`;
+  if (message?.audioMessage)    return message.audioMessage.ptt ? "🎙️ Sesli mesaj" : "🔊 Ses";
+  if (message?.documentMessage) {
+    const name = message.documentMessage.fileName || "belge";
+    return `📄 ${name}`;
+  }
+  if (message?.stickerMessage)  return "🪧 Çıkartma";
+  if (message?.contactMessage)  return "👤 Kişi kartı";
+  if (message?.locationMessage || message?.liveLocationMessage) return "📍 Konum";
+  if (message?.pollCreationMessage || message?.pollCreationMessageV3) return "📊 Anket";
+
+  // Unknown / new Baileys type → generic placeholder, never the internal name.
+  return visibleKeys.length > 0 ? "📎 Mesaj" : "";
 }
 
 start().catch((err) => {

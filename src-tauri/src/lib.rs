@@ -1398,10 +1398,30 @@ async fn whatsapp_get_history(
 async fn whatsapp_list_contacts(
     state: State<'_, AppState>,
 ) -> Result<Vec<whatsapp::WaContact>, String> {
-    state.whatsapp.db
+    let mut contacts = state.whatsapp.db
         .list_contacts()
         .await
-        .map_err(|e| format!("WaDb contacts: {e}"))
+        .map_err(|e| format!("WaDb contacts: {e}"))?;
+
+    // Enrich each contact with the display name from the bridge. The
+    // bridge accumulates names from contacts.* events + msg.pushName.
+    // Empty map (network/disconnected) leaves names as None — frontend
+    // then falls back to the JID.
+    let names = state.whatsapp.fetch_contact_names().await;
+    for c in contacts.iter_mut() {
+        if let Some(name) = names.get(&c.jid) {
+            c.name = Some(name.clone());
+        }
+    }
+    Ok(contacts)
+}
+
+#[tauri::command]
+async fn whatsapp_profile_picture(
+    state: State<'_, AppState>,
+    jid: String,
+) -> Result<Option<String>, String> {
+    Ok(state.whatsapp.profile_picture(&jid).await)
 }
 
 #[tauri::command]
@@ -2061,6 +2081,7 @@ pub fn run() {
             whatsapp_get_auto_reply,
             whatsapp_get_history,
             whatsapp_list_contacts,
+            whatsapp_profile_picture,
             whatsapp_is_running,
             pick_directory,
             list_projects,

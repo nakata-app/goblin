@@ -23,6 +23,10 @@ pub struct WaContact {
     pub last_message: String,
     pub last_ts: i64,
     pub unread: i64,
+    /// Display name from WhatsApp address book / pushName. None when unknown
+    /// (frontend falls back to a truncated JID).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 impl WaConversationDb {
@@ -135,6 +139,7 @@ impl WaConversationDb {
                     last_message: row.get(1)?,
                     last_ts: row.get(2)?,
                     unread: row.get(3)?,
+                    name: None,
                 })
             })?
             .filter_map(|r| r.ok())

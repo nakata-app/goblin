@@ -248,6 +248,55 @@ impl WhatsappBridge {
         }
     }
 
+    /// Fetch contact names from the bridge. Returns a (jid → display name)
+    /// map populated by Baileys' contacts events + msg.pushName. Empty on
+    /// any failure so callers can degrade gracefully.
+    pub async fn fetch_contact_names(&self) -> std::collections::HashMap<String, String> {
+        let url = format!("{}/contacts", Self::base_url());
+        let Ok(resp) = self
+            .client
+            .get(&url)
+            .header("x-bridge-token", BRIDGE_TOKEN)
+            .timeout(std::time::Duration::from_secs(2))
+            .send()
+            .await
+        else {
+            return std::collections::HashMap::new();
+        };
+        let Ok(data) = resp.json::<serde_json::Value>().await else {
+            return std::collections::HashMap::new();
+        };
+        let mut out = std::collections::HashMap::new();
+        if let Some(arr) = data.get("contacts").and_then(|v| v.as_array()) {
+            for c in arr {
+                if let (Some(jid), Some(name)) = (
+                    c.get("jid").and_then(|v| v.as_str()),
+                    c.get("name").and_then(|v| v.as_str()),
+                ) {
+                    out.insert(jid.to_string(), name.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    /// Fetch a profile picture as a data URL. None when unavailable
+    /// (private profile / disconnected / network error). Bridge caches
+    /// for 24h, so it is cheap to call repeatedly.
+    pub async fn profile_picture(&self, jid: &str) -> Option<String> {
+        let url = format!("{}/profile-picture/{}", Self::base_url(), urlencoding::encode(jid));
+        let resp = self
+            .client
+            .get(&url)
+            .header("x-bridge-token", BRIDGE_TOKEN)
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await
+            .ok()?;
+        let data: serde_json::Value = resp.json().await.ok()?;
+        data.get("photo").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+
     /// Poll for new messages
     pub async fn poll_messages(&self) -> Result<Vec<WaMessage>, String> {
         let url = format!("{}/messages", Self::base_url());

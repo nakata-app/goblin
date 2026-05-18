@@ -2,7 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface WaUser { jid: string; name: string; }
-interface WaContact { jid: string; last_message: string; last_ts: number; unread: number; }
+interface WaContact {
+  jid: string;
+  last_message: string;
+  last_ts: number;
+  unread: number;
+  /** Display name from address book / pushName. null when unknown. */
+  name?: string | null;
+}
 interface WaHistoryMessage { id: string; jid: string; direction: 'in' | 'out'; text: string; timestamp_ms: number; }
 
 interface BridgeStatus {
@@ -30,16 +37,36 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
   const [showNewJid, setShowNewJid] = useState(false);
   const [autoReply, setAutoReply] = useState(false);
   const [search, setSearch] = useState('');
+  // jid -> data URL string when loaded, null when unavailable.
+  // undefined means "not fetched yet" so we know to request it.
+  const [photoCache, setPhotoCache] = useState<Record<string, string | null>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
   const selectedJidRef = useRef<string | null>(null);
+  const photoCacheRef = useRef(photoCache);
 
   selectedJidRef.current = selectedJid;
+  photoCacheRef.current = photoCache;
 
   const loadContacts = useCallback(async () => {
     try {
       const c = await invoke<WaContact[]>('whatsapp_list_contacts');
       setContacts(c);
+
+      // Fetch profile pictures for any contact we have not seen yet.
+      // Bridge caches photos for 24h so this is cheap to call repeatedly.
+      // Errors are swallowed; the avatar falls back to initials.
+      const known = photoCacheRef.current;
+      const missing = c.filter((x) => !(x.jid in known));
+      for (const item of missing) {
+        invoke<string | null>('whatsapp_profile_picture', { jid: item.jid })
+          .then((photo) => {
+            setPhotoCache((prev) => ({ ...prev, [item.jid]: photo ?? null }));
+          })
+          .catch(() => {
+            setPhotoCache((prev) => ({ ...prev, [item.jid]: null }));
+          });
+      }
     } catch { /* bridge not running */ }
   }, []);
 
@@ -251,6 +278,7 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
                 const q = search.trim().toLowerCase();
                 const filtered = q
                   ? contacts.filter((c) =>
+                      displayLabel(c.jid, c.name).toLowerCase().includes(q) ||
                       formatJid(c.jid).toLowerCase().includes(q) ||
                       c.last_message.toLowerCase().includes(q))
                   : contacts;
@@ -258,18 +286,17 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
                   return <div className="wa-contacts-empty">No matches for "{search}"</div>;
                 }
                 return filtered.map((c) => {
-                  const display = formatJid(c.jid);
-                  const initials = initialsFor(display);
+                  const label = displayLabel(c.jid, c.name);
                   return (
                     <div
                       key={c.jid}
                       className={`wa-contact-item ${selectedJid === c.jid ? 'wa-contact-active' : ''}`}
                       onClick={() => selectContact(c.jid)}
                     >
-                      <div className="wa-avatar" style={{ background: avatarColor(c.jid) }}>{initials}</div>
+                      <Avatar jid={c.jid} name={c.name} photo={photoCache[c.jid]} size="md" />
                       <div className="wa-contact-body">
                         <div className="wa-contact-row">
-                          <span className="wa-contact-jid">{display}</span>
+                          <span className="wa-contact-jid">{label}</span>
                           <span className="wa-contact-time">{formatTimestamp(c.last_ts)}</span>
                         </div>
                         <div className="wa-contact-row">
@@ -295,21 +322,29 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
                 </div>
               ) : (
                 <>
-                  <div className="wa-conv-header">
-                    <div
-                      className="wa-avatar wa-avatar-sm"
-                      style={{ background: avatarColor(selectedJid) }}
-                    >
-                      {initialsFor(formatJid(selectedJid))}
-                      {autoReply && <span className="wa-online-dot" title="Auto-reply on" />}
-                    </div>
-                    <div className="wa-conv-meta">
-                      <span className="wa-conv-name">{formatJid(selectedJid)}</span>
-                      <span className="wa-conv-sub">
-                        {autoReply ? 'Goblin replies automatically' : `${history.length} messages`}
-                      </span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const selectedContact = contacts.find((c) => c.jid === selectedJid);
+                    const selName = selectedContact?.name ?? null;
+                    return (
+                      <div className="wa-conv-header">
+                        <div className="wa-avatar-wrap">
+                          <Avatar
+                            jid={selectedJid}
+                            name={selName}
+                            photo={photoCache[selectedJid]}
+                            size="sm"
+                          />
+                          {autoReply && <span className="wa-online-dot" title="Auto-reply on" />}
+                        </div>
+                        <div className="wa-conv-meta">
+                          <span className="wa-conv-name">{displayLabel(selectedJid, selName)}</span>
+                          <span className="wa-conv-sub">
+                            {autoReply ? 'Goblin replies automatically' : `${history.length} messages`}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="wa-messages">
                     {history.length === 0 && (
                       <div className="wa-conv-fresh">
@@ -323,7 +358,9 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
                         <div key={m.id} className={`wa-msg ${m.direction === 'out' ? 'wa-msg-me' : ''}`}>
                           {showFrom && (
                             <div className="wa-msg-from">
-                              {m.direction === 'out' ? 'You' : formatJid(m.jid)}
+                              {m.direction === 'out'
+                                ? 'You'
+                                : displayLabel(m.jid, contacts.find((c) => c.jid === m.jid)?.name ?? null)}
                             </div>
                           )}
                           <div className="wa-msg-text">{m.text}</div>
@@ -387,6 +424,49 @@ export function WhatsappPanel({ isOpen, onToggle }: Props) {
 
 function formatJid(jid: string): string {
   return jid.replace(/@.*$/, '');
+}
+
+/// Display label for a contact: real name when known, otherwise the
+/// phone number / @lid prefix. Centralised so contact list, conversation
+/// header, and message bubbles all stay in sync.
+function displayLabel(jid: string, name?: string | null): string {
+  return name && name.trim().length > 0 ? name : formatJid(jid);
+}
+
+/// Small inline avatar component. Renders the contact's profile picture
+/// when available, else the initials-colored circle fallback. The img
+/// onError swap handles cases where the data URL turns out unrenderable.
+function Avatar({
+  jid,
+  name,
+  photo,
+  size,
+}: {
+  jid: string;
+  name?: string | null;
+  photo?: string | null;
+  size: 'sm' | 'md';
+}) {
+  const label = displayLabel(jid, name);
+  const cls = size === 'sm' ? 'wa-avatar wa-avatar-sm' : 'wa-avatar';
+  if (photo) {
+    return (
+      <div className={cls}>
+        <img
+          className="wa-avatar-img"
+          src={photo}
+          alt={label}
+          loading="lazy"
+          draggable={false}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className={cls} style={{ background: avatarColor(jid) }}>
+      {initialsFor(label)}
+    </div>
+  );
 }
 
 function formatTimestamp(ts: number): string {
