@@ -3126,30 +3126,6 @@ input[type="checkbox"] {
   pointer-events: none;
 }
 
-/* ---- Empty-state starter chips ---- */
-.chat-starters {
-  display: flex; flex-wrap: wrap;
-  gap: 8px; justify-content: center;
-  margin-top: 18px; max-width: 460px;
-}
-
-.chat-starter {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--text-secondary);
-  padding: 7px 12px; border-radius: 16px;
-  font-size: 12px; cursor: pointer;
-  transition: all 0.18s ease;
-  font-family: var(--font-sans);
-}
-
-.chat-starter:hover {
-  background: rgba(16, 185, 129, 0.10);
-  border-color: rgba(16, 185, 129, 0.30);
-  color: var(--text-primary);
-  transform: translateY(-1px);
-}
-
 /* ---- Code block copy button ---- */
 .chat-code-block {
   position: relative;

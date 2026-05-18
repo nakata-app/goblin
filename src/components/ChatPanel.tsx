@@ -3,13 +3,6 @@ import type { Message } from '../types';
 import { useAgentStore } from '../stores/agentStore';
 import { useChatStore } from '../stores/chatStore';
 
-const STARTER_PROMPTS = [
-  '🗂️ Bu repo\'yu özetle, mimari bir bakış ver',
-  '🐛 Son commit\'te ne değişti, breaking change var mı?',
-  '🔍 TODO ve FIXME yorumlarını listele',
-  '🧪 Eksik unit test\'leri tespit et',
-];
-
 export function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 }
@@ -143,20 +136,6 @@ export const ChatPanel = memo(function ChatPanel({ messages, onContinue }: ChatP
           <div className="chat-empty-icon">👺</div>
           <div className="chat-empty-title">Goblin ready</div>
           <div className="chat-empty-sub">{randomGreeting()}</div>
-          <div className="chat-starters">
-            {STARTER_PROMPTS.map((p) => (
-              <button
-                key={p}
-                className="chat-starter"
-                onClick={() => {
-                  const text = p.replace(/^[^\s]+\s/, '');
-                  useChatStore.getState().setInput(text);
-                }}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
         </div>
       )}
       {messages.map((msg) => (

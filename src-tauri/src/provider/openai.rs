@@ -226,7 +226,7 @@ mod tests {
         match &result {
             Ok(resp) => {
                 eprintln!("=== DeepSeek v4-pro API TEST ===");
-                eprintln!("Content: {:?}", resp.content);
+                eprintln!("Content length: {}", resp.content.as_deref().map(str::len).unwrap_or(0));
                 eprintln!("Tokens in: {}, out: {}", resp.tokens_in, resp.tokens_out);
                 eprintln!("Model: {}", resp.model);
                 assert!(resp.content.is_some(), "Response content should not be empty");
@@ -269,7 +269,7 @@ mod tests {
         match &result {
             Ok(resp) => {
                 eprintln!("=== DeepSeek v4-flash API TEST ===");
-                eprintln!("Content: {:?}", resp.content);
+                eprintln!("Content length: {}", resp.content.as_deref().map(str::len).unwrap_or(0));
                 eprintln!("Tokens in: {}, out: {}", resp.tokens_in, resp.tokens_out);
                 assert!(resp.content.is_some());
                 assert!(resp.tokens_in > 0);

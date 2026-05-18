@@ -11,6 +11,18 @@ use tokio::sync::Mutex;
 
 const TELEGRAM_API: &str = "https://api.telegram.org";
 
+/// Redact a Telegram chat_id so log lines still distinguish chats without
+/// revealing the full numeric ID. "123456789" -> "12…9", short IDs masked.
+fn mask_chat_id(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 4 {
+        return "***".to_string();
+    }
+    let head: String = chars.iter().take(2).collect();
+    let tail: String = chars.iter().rev().take(1).collect();
+    format!("{head}…{tail}")
+}
+
 /// Send `text` to `chat_id` via the bot identified by `bot_token`.
 /// Returns Ok(()) on HTTP 2xx, an Err with the response status / body
 /// otherwise. Times out after 10 seconds so a network blip cannot pile
@@ -121,11 +133,14 @@ pub async fn start_polling(
 
             // İzin kontrolü
             if !allowed.is_empty() && !allowed.contains(&chat_id_val) {
-                eprintln!("[telegram] izinsiz chat_id {} reddedildi", chat_id_val);
+                eprintln!("[telegram] izinsiz chat_id {} reddedildi", mask_chat_id(&chat_id_val));
                 continue;
             }
 
-            eprintln!("[telegram] {} ({}): {}", from_name, chat_id_val, text);
+            // Never log message text — it leaks private content to stdout.
+            // Length-only summary is enough to confirm the message was received.
+            eprintln!("[telegram] inbound from chat={} ({} chars)", mask_chat_id(&chat_id_val), text.chars().count());
+            let _ = from_name; // intentionally unused in the log
 
             // Agent'a gönder
             let mut guard = agent_slot.lock().await;

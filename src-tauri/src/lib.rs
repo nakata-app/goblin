@@ -1569,6 +1569,21 @@ async fn subagent_runner_loop(app: tauri::AppHandle) {
     }
 }
 
+/// Redact a WhatsApp JID for logging: keep only a short prefix + suffix
+/// so the line still distinguishes contacts in logs without revealing
+/// the phone number or @lid identity. "96624349057237@lid" → "9662…7@lid".
+fn mask_jid(jid: &str) -> String {
+    let (user, suffix) = jid.split_once('@').unwrap_or((jid, ""));
+    let suffix_full = if suffix.is_empty() { String::new() } else { format!("@{}", suffix) };
+    let chars: Vec<char> = user.chars().collect();
+    if chars.len() <= 5 {
+        return format!("***{}", suffix_full);
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars.iter().rev().take(1).collect();
+    format!("{head}…{tail}{suffix_full}")
+}
+
 async fn wa_agent_loop(app: tauri::AppHandle) {
     // One conversation session per sender JID so each contact has its own context.
     let mut sender_sessions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -1625,7 +1640,7 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
             let slot = match ensure_session_slot(&state, &session_id) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[wa_agent] Session error for {}: {}", jid, e);
+                    eprintln!("[wa_agent] Session error for {}: {}", mask_jid(&jid), e);
                     continue;
                 }
             };
@@ -1636,7 +1651,7 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
             tokio::spawn(async move {
                 let mut guard = slot.lock().await;
                 let Some(agent) = guard.as_mut() else {
-                    eprintln!("[wa_agent] Agent slot empty for session {}", session_id);
+                    eprintln!("[wa_agent] Agent slot empty for session {}", mask_jid(&session_id));
                     return;
                 };
 
@@ -1658,16 +1673,16 @@ async fn wa_agent_loop(app: tauri::AppHandle) {
                             || out.contains("~/.ssh") || out.contains(".goblin/")
                             || out.contains("BRIDGE_TOKEN") || out.contains("goblin-whatsapp-bridge");
                         if leaked {
-                            eprintln!("[wa_agent] Output guard triggered for {}, response blocked", from_jid);
+                            eprintln!("[wa_agent] Output guard triggered for {}, response blocked", mask_jid(&from_jid));
                         } else {
                             let _ = whatsapp.db.save_outbound(&from_jid, out).await;
                             if let Err(e) = whatsapp.send_message(&from_jid, out).await {
-                                eprintln!("[wa_agent] Send failed to {}: {}", from_jid, e);
+                                eprintln!("[wa_agent] Send failed to {}: {}", mask_jid(&from_jid), e);
                             }
                         }
                     }
                     Ok(_) => {}
-                    Err(e) => eprintln!("[wa_agent] Agent error for {}: {}", from_jid, e),
+                    Err(e) => eprintln!("[wa_agent] Agent error for {}: {}", mask_jid(&from_jid), e),
                 }
             });
         }

@@ -17,6 +17,12 @@ const AUTH_DIR = process.env.BRIDGE_AUTH_DIR || path.join(
 );
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || "goblin-whatsapp-bridge";
 
+// Verbose logging is OFF by default — every incoming WhatsApp message would
+// otherwise spam stdout (and worse, leak message content via the QUEUED log).
+// Set WA_BRIDGE_VERBOSE=1 to re-enable for debugging.
+const VERBOSE = process.env.WA_BRIDGE_VERBOSE === "1";
+const vlog = (...args) => { if (VERBOSE) console.log(...args); };
+
 // ── State ──
 let sock = null;
 let qrCode = null;
@@ -111,7 +117,10 @@ app.post("/pair", async (req, res) => {
   }
   try {
     const code = await sock.requestPairingCode(String(phone));
-    console.log(`[bridge] Pairing code issued for ${phone}: ${code}`);
+    // Never log the pairing code or phone — the secret is returned via
+    // HTTP response and shown in the app UI. Stdout would leak it to the
+    // terminal scrollback / any log capture.
+    console.log(`[bridge] Pairing code issued (length=${code.length})`);
     res.json({ code, phone: String(phone) });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -185,9 +194,9 @@ async function start() {
 
   // ── Incoming messages ──
   sock.ev.on("messages.upsert", (m) => {
-    console.log(`[bridge] messages.upsert: ${m.messages.length} message(s), type=${m.type}`);
+    vlog(`[bridge] messages.upsert: ${m.messages.length} message(s), type=${m.type}`);
     for (const msg of m.messages) {
-      console.log(`[bridge] msg keys: ${Object.keys(msg.message || {}).join(",")} fromMe=${msg.key.fromMe}`);
+      vlog(`[bridge] msg keys: ${Object.keys(msg.message || {}).join(",")} fromMe=${msg.key.fromMe}`);
       if (msg.key.fromMe) continue;
       if (!msg.message) continue;
 
@@ -220,7 +229,7 @@ async function start() {
           ? Number(msg.messageTimestamp) * 1000
           : Date.now(),
       };
-      console.log(`[bridge] QUEUED: from=${sender} text="${text}"`);
+      vlog(`[bridge] QUEUED: from=${sender} text="${text}"`);
       messageQueue.push(entry);
 
       if (messageQueue.length > MAX_QUEUE) {
