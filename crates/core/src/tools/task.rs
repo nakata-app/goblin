@@ -103,9 +103,10 @@ impl Tool for CreateTask {
     }
 }
 
-// Atakan: model kullanıcının her mesajını create_task'a yansıtıyordu
-// ("evet", "selam", "naber...", "X nasıl yapılır" gibi). Heuristik guard:
-// task tarifi konuşma kalıbına benziyorsa veya soru ise reddet.
+// Reject anything that looks like a chat reply, a question, or a vague
+// internal-thinking note. The model used to mirror every user message into
+// create_task ("evet", "selam", "düşün, sonra şunu yap" etc.). The system
+// prompt forbids this, this guard enforces it at the tool layer.
 fn reject_chatlike(description: &str) -> Result<(), &'static str> {
     let trimmed = description.trim();
     if trimmed.is_empty() {
@@ -119,6 +120,7 @@ fn reject_chatlike(description: &str) -> Result<(), &'static str> {
     if trimmed.ends_with('?') {
         return Err("ends with '?' — questions are not tasks, answer instead");
     }
+
     const CHAT_PREFIXES: &[&str] = &[
         "selam", "merhaba", "naber", "hey", "ok", "tamam", "evet", "hayır",
         "yes", "no", "hadi", "lütfen", "please", "thanks", "teşekkür",
@@ -131,6 +133,27 @@ fn reject_chatlike(description: &str) -> Result<(), &'static str> {
             return Err("starts with conversational/question token");
         }
     }
+
+    // Vague "internal thinking" tasks — the model dressing reasoning as work.
+    // "düşün ve şunu yap", "bakalım nasıl olur", "kullanıcının sorusunu anla"
+    // are not work units, they are the model narrating itself.
+    const VAGUE_TOKENS: &[&str] = &[
+        "düşün", "dusun", "düşünmek", "dusunmek",
+        "bakalım", "bakalim", "incele şu", "incele bu",
+        "anla ", "anlamak ", "yorumla",
+        "kullanıcının sorusunu", "kullanicinin sorusunu",
+        "kullanıcıya cevap", "kullaniciya cevap",
+        "yanıtla", "yanitla", "cevap ver",
+        "think ", "thinking ", "consider ", "ponder ",
+        "respond to the user", "answer the user", "reply to the user",
+        "analyze the user", "analyse the user",
+    ];
+    for t in VAGUE_TOKENS {
+        if lower.contains(t) {
+            return Err("vague self-narration — not a concrete work unit");
+        }
+    }
+
     Ok(())
 }
 
@@ -164,6 +187,26 @@ mod reject_chatlike_tests {
         assert!(reject_chatlike("Implement create_task heuristic guard").is_ok());
         assert!(reject_chatlike("Refactor banner rendering to hide after first user message").is_ok());
         assert!(reject_chatlike("Add R2 upload step to packshot pipeline").is_ok());
+    }
+
+    #[test]
+    fn rejects_vague_internal_thinking() {
+        assert!(reject_chatlike("düşün ve sonra şunu yap").is_err());
+        assert!(reject_chatlike("Bakalım nasıl yapılacak").is_err());
+        assert!(reject_chatlike("kullanıcının sorusunu anla ve cevapla").is_err());
+        assert!(reject_chatlike("yanıtla kullanıcıyı uygun şekilde").is_err());
+        assert!(reject_chatlike("Think about the user request carefully").is_err());
+        assert!(reject_chatlike("Respond to the user with the right answer").is_err());
+        assert!(reject_chatlike("Analyze the user intent and reply").is_err());
+    }
+
+    #[test]
+    fn accepts_concrete_imperatives_with_action_verbs() {
+        // These contain verbs that overlap with chat patterns but are
+        // concrete and actionable, so they should pass.
+        assert!(reject_chatlike("Refactor banner to render once per session").is_ok());
+        assert!(reject_chatlike("Implement memory transparency drawer UI").is_ok());
+        assert!(reject_chatlike("Wire approval modal to oneshot channel").is_ok());
     }
 }
 
