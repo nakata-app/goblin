@@ -39,7 +39,7 @@ flate2 = "1"
 tar = "0.4"
 rustyline = { version = "14", default-features = false, features = ["with-file-history"] }
 libc = "0.2"
-wasmtime = { version = "28", default-features = false, features = ["cranelift", "async", "runtime"] }
+wasmtime = { version = "36", default-features = false, features = ["cranelift", "async", "runtime"] }
 wasmtime-wasi = "28"
 wat = "1"
 regorus = { version = "0.9", default-features = false, features = ["std", "arc"] }
